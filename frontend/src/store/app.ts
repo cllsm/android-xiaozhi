@@ -54,16 +54,17 @@ export const useAppStore = defineStore('app', () => {
       isConnected.value = data.connected
     })
 
-    // 文本回复
+    // 文本回复（仅 TTS/AI 回复加入聊天记录）
     backendService.on('text_response', (data: any) => {
       if (!data.text) return
       currentText.value = data.text
-      const isFinal = data.is_final !== false  // 默认当作最终结果
+      // STT 来源不加入聊天记录（用户输入已由 sendText 处理）
+      if (data.source === 'stt') return
+      const isFinal = data.is_final !== false
       if (isFinal) {
-        const isUser = data.source === 'stt'
         chatHistory.value.push({
           text: data.text,
-          isUser,
+          isUser: false,
           timestamp: Date.now(),
         })
       }
