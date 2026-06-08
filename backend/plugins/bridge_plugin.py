@@ -114,14 +114,15 @@ class BridgePlugin(Plugin):
 
         if msg_type == "tts":
             state = json_data.get("state")
-            if state == "start":
-                text = json_data.get("text")
-                if text:
-                    # TTS 开始播放，推送文本给前端
-                    await self._local_server.broadcast_event("text_response", {
-                        "source": "tts",
-                        "text": text,
-                    })
+            text = json_data.get("text")
+            if text:
+                # TTS 文本消息：start / sentence_start / sentence_end 均可能带文本
+                is_final = state in ("stop", "sentence_end")
+                await self._local_server.broadcast_event("text_response", {
+                    "source": "tts",
+                    "text": text,
+                    "is_final": is_final,
+                })
 
         elif msg_type == "stt":
             # 语音识别结果

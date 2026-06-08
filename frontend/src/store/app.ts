@@ -46,7 +46,7 @@ export const useAppStore = defineStore('app', () => {
 
     // 设备状态变更
     backendService.on('state_change', (data: any) => {
-      deviceState.value = data.state
+      deviceState.value = (data.state || '').toUpperCase()
     })
 
     // 服务器连接状态
@@ -84,8 +84,8 @@ export const useAppStore = defineStore('app', () => {
   async function _fetchStatus() {
     try {
       const status = await backendService.httpGet('/api/status')
-      deviceState.value = status.device_state
-      listeningMode.value = status.listening_mode || 'REALTIME'
+      deviceState.value = (status.device_state || 'IDLE').toUpperCase()
+      listeningMode.value = (status.listening_mode || 'REALTIME').toUpperCase()
       isConnected.value = status.connected
     } catch (e) {
       console.warn('[AppStore] 获取状态失败:', e)
