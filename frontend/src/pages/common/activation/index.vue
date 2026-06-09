@@ -45,8 +45,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { backendService } from '@/services/backend'
+import { backendService } from '@/api/backend'
 
 const isActivated = ref(false)
 const isActivating = ref(false)
@@ -59,13 +58,15 @@ onMounted(async () => {
     const result = await backendService.httpGet('/api/activation')
     isActivated.value = result.activated
     deviceId.value = result.device_id || ''
-  } catch (e) {
+  }
+  catch (e) {
     console.warn('[Activation] 获取激活状态失败:', e)
   }
 })
 
 async function handleActivate() {
-  if (isActivating.value || !activationCode.value.trim()) return
+  if (isActivating.value || !activationCode.value.trim())
+    return
 
   isActivating.value = true
   errorMsg.value = ''
@@ -76,9 +77,11 @@ async function handleActivate() {
     })
     isActivated.value = true
     deviceId.value = result?.device_id || ''
-  } catch (e: any) {
+  }
+  catch (e: any) {
     errorMsg.value = e.message || '激活失败'
-  } finally {
+  }
+  finally {
     isActivating.value = false
   }
 }

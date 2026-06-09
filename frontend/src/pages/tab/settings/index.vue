@@ -70,6 +70,24 @@
     </view>
 
     <view class="section">
+      <text class="section-title">后端服务</text>
+
+      <view class="form-item">
+        <text class="form-label">后端地址</text>
+        <input
+          class="form-input"
+          v-model="backendHost"
+          placeholder="127.0.0.1 或局域网 IP"
+          placeholder-class="input-placeholder"
+        />
+      </view>
+
+      <view class="form-item">
+        <text class="form-hint">本机 Termux 填 127.0.0.1，电脑后端填局域网 IP</text>
+      </view>
+    </view>
+
+    <view class="section">
       <text class="section-title">关于</text>
       <view class="form-item row">
         <text class="form-label">版本</text>
@@ -89,12 +107,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { useSettingsStore } from '@/store/settings'
-import { storeToRefs } from 'pinia'
+import { useSettingsStore } from '@/store'
 
 const settingsStore = useSettingsStore()
-const { websocketUrl, mqttBroker, protocol, wakeWordEnabled, wakeWordSensitivity } = storeToRefs(settingsStore)
+const { websocketUrl, mqttBroker, protocol, wakeWordEnabled, wakeWordSensitivity, backendHost } = storeToRefs(settingsStore)
 
 const saveSuccess = ref(false)
 
@@ -109,7 +125,8 @@ async function handleSave() {
     await settingsStore.saveSettings()
     saveSuccess.value = true
     setTimeout(() => { saveSuccess.value = false }, 2000)
-  } catch (e) {
+  }
+  catch (e) {
     console.error('保存设置失败:', e)
   }
 }
@@ -168,6 +185,11 @@ async function handleSave() {
 
 .input-placeholder {
   color: #616161;
+}
+
+.form-hint {
+  color: #616161;
+  font-size: 12px;
 }
 
 .radio-group {

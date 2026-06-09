@@ -73,13 +73,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
-import { useAppStore } from '@/store/app'
-import { storeToRefs } from 'pinia'
-import ChatBubble from '@/components/ChatBubble.vue'
-import AudioWave from '@/components/AudioWave.vue'
-import EmotionFace from '@/components/EmotionFace.vue'
-import StatusBar from '@/components/StatusBar.vue'
+import { useAppStore } from '@/store'
 
 const appStore = useAppStore()
 const { deviceState, currentText, currentEmotion, chatHistory, errorMessage } = storeToRefs(appStore)
@@ -87,7 +81,6 @@ const { deviceState, currentText, currentEmotion, chatHistory, errorMessage } = 
 const inputText = ref('')
 const scrollTop = ref(0)
 
-// 对话历史更新时自动滚动到底部
 watch(() => chatHistory.value.length, () => {
   setTimeout(() => { scrollTop.value = scrollTop.value + 1000 }, 50)
 })
@@ -106,7 +99,8 @@ function handleAbort() {
 
 function handleSendText() {
   const text = inputText.value.trim()
-  if (!text) return
+  if (!text)
+    return
   appStore.sendText(text)
   inputText.value = ''
 }
