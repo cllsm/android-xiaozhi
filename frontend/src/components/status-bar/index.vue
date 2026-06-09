@@ -20,9 +20,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
-import { useAppStore } from '@/store/app'
-import { storeToRefs } from 'pinia'
+import { useAppStore } from '@/store'
 
 const appStore = useAppStore()
 const { deviceState, isConnected, isBackendConnected } = storeToRefs(appStore)

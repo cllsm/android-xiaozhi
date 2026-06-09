@@ -13,7 +13,8 @@ defineProps<{
 }>()
 
 function formatTime(ts?: number): string {
-  if (!ts) return ''
+  if (!ts)
+    return ''
   const d = new Date(ts)
   return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`
 }
