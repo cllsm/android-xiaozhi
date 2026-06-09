@@ -95,6 +95,9 @@ class ConfigManager:
                 "PIL": "WARNING",
             },
         },
+        "APP_OPTIONS": {
+            "BACKEND_HOST": "127.0.0.1",  # App 端后端地址: 127.0.0.1(本机Termux) 或 局域网IP(电脑后端)
+        },
     }
 
     def __new__(cls):

@@ -545,6 +545,14 @@ class LocalServer:
                     "data": {"message": f"未知的消息类型: {msg_type}"},
                 })
 
+        elif msg.type == WSMsgType.BINARY:
+            # 前端发送的麦克风 PCM 音频，转发给协议层
+            if self._container:
+                try:
+                    await self._container.on_frontend_audio(msg.data)
+                except Exception as e:
+                    logger.debug(f"转发前端音频失败: {e}")
+
         elif msg.type == WSMsgType.ERROR:
             logger.error(f"WebSocket 错误: {ws.exception()}")
 
@@ -828,6 +836,26 @@ class LocalServer:
                 disconnected.append(ws)
 
         # 清理已断开的连接
+        for ws in disconnected:
+            self._ws_clients.discard(ws)
+
+    async def broadcast_audio(self, pcm_data: bytes) -> None:
+        """向前端广播 PCM 音频二进制数据.
+
+        Args:
+            pcm_data: PCM float32 小端序二进制数据
+        """
+        if not self._ws_clients:
+            return
+
+        disconnected: list[web.WebSocketResponse] = []
+        for ws in list(self._ws_clients):
+            try:
+                await ws.send_bytes(pcm_data)
+            except Exception as e:
+                logger.info(f"[AUDIO_DEBUG] broadcast_audio 发送失败: {e}")
+                disconnected.append(ws)
+
         for ws in disconnected:
             self._ws_clients.discard(ws)
 

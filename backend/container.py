@@ -586,6 +586,47 @@ class AndroidServiceContainer:
         await self.protocol.send_start_listening(mode)
         await self.state.set_device_state(DeviceState.LISTENING)
 
+    async def on_frontend_audio(self, pcm_data: bytes) -> None:
+        """接收前端发来的麦克风 PCM 音频，编码为 Opus 后发送给远程服务器.
+
+        Args:
+            pcm_data: PCM float32 小端序, 16kHz, mono
+        """
+        try:
+            if not self.protocol or not self.protocol.is_audio_channel_opened():
+                return
+
+            # 检查是否应该发送（LISTENING 状态）
+            if not self.state.should_capture_audio():
+                return
+
+            import numpy as np
+            from backend.audio_codecs.audio_codec import AudioConfig
+
+            # bytes → numpy float32
+            audio = np.frombuffer(pcm_data, dtype=np.float32)
+
+            # 计算 Opus 帧大小（16kHz * 20ms = 320 采样点）
+            frame_size = int(AudioConfig.INPUT_SAMPLE_RATE * AudioConfig.FRAME_DURATION / 1000)
+
+            # 按 frame_size 分帧编码并发送
+            codec = None
+            for plugin in self.plugins._plugins:
+                if plugin.name == "audio" and plugin.codec:
+                    codec = plugin.codec
+                    break
+
+            if codec and len(audio) >= frame_size:
+                # 只取整数帧
+                num_frames = len(audio) // frame_size
+                for i in range(num_frames):
+                    frame = audio[i * frame_size : (i + 1) * frame_size]
+                    encoded = codec.opus_codec.encode(frame, frame_size)
+                    if encoded:
+                        await self.protocol.send_audio(encoded)
+        except Exception as e:
+            logger.debug(f"处理前端音频失败: {e}")
+
     async def abort_speaking(self, reason: str) -> None:
         """中止语音输出.
 

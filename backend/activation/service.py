@@ -15,7 +15,10 @@ from typing import Dict, Optional, Tuple, TypedDict
 
 import aiohttp
 import machineid
-import psutil
+try:
+    import psutil
+except ImportError:
+    psutil = None  # Android/Termux 不支持 psutil
 
 from backend.constants.system import SystemConstants
 from backend.log import get_logger
@@ -377,6 +380,8 @@ class ActivationService:
         获取主要网卡MAC地址.
         """
         try:
+            if psutil is None:
+                return None
             for iface, addrs in psutil.net_if_addrs().items():
                 if iface.lower().startswith(("lo", "loopback")):
                     continue
