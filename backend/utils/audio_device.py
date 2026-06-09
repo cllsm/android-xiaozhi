@@ -1,7 +1,7 @@
-"""音频设备管理（Android 适配版）.
+"""音频设备管理（Android/Termux 适配版）.
 
-简化原版的 sounddevice 设备枚举，使用固定设备配置。
-桌面端使用 sounddevice 自动检测默认设备，Android 端使用固定参数。
+桌面端和 Termux: 使用 sounddevice 检测默认设备
+Android 原生 (Chaquopy): 使用固定参数
 """
 
 from __future__ import annotations
@@ -30,11 +30,28 @@ class DeviceConfig:
     output_frame_size: int
 
 
+def _is_android() -> bool:
+    """检测是否为 Android 平台."""
+    return hasattr(sys, 'getandroidapilevel') or \
+           'ANDROID_ARGUMENT' in __import__('os').environ
+
+
+def _is_termux() -> bool:
+    """检测是否为 Termux 环境."""
+    if not _is_android():
+        return False
+    try:
+        import os
+        return os.path.exists('/data/data/com.termux')
+    except Exception:
+        return False
+
+
 class AudioDeviceManager:
     """音频设备管理器.
 
-    桌面端: 使用 sounddevice 检测默认设备
-    Android 端: 使用固定配置（内置麦克风/扬声器）
+    桌面端 + Termux: 使用 sounddevice 检测默认设备
+    Android 原生: 使用固定配置（内置麦克风/扬声器）
     """
 
     def __init__(self, config_manager: ConfigManager):
@@ -45,15 +62,17 @@ class AudioDeviceManager:
         AudioConfig.reload()
         frame_duration_ms = AudioConfig.FRAME_DURATION
 
-        if self._is_android():
+        # Termux 有 sounddevice，走桌面端检测路径
+        if _is_termux():
+            logger.info("检测到 Termux 环境，使用 sounddevice 检测音频设备")
+            return self._detect_desktop_devices(frame_duration_ms)
+
+        # Android 原生环境，使用固定配置
+        if _is_android():
             return self._get_android_device_config(frame_duration_ms)
 
+        # 桌面端
         return self._detect_desktop_devices(frame_duration_ms)
-
-    def _is_android(self) -> bool:
-        """检测是否为 Android 平台."""
-        return hasattr(sys, 'getandroidapilevel') or \
-               'ANDROID_ARGUMENT' in __import__('os').environ
 
     def _get_android_device_config(self, frame_duration_ms: int) -> DeviceConfig:
         """Android 固定设备配置."""
@@ -76,7 +95,7 @@ class AudioDeviceManager:
         return config
 
     def _detect_desktop_devices(self, frame_duration_ms: int) -> DeviceConfig:
-        """桌面端自动检测音频设备."""
+        """桌面端 / Termux 自动检测音频设备."""
         try:
             import sounddevice as sd
         except ImportError:
@@ -103,7 +122,7 @@ class AudioDeviceManager:
                 output_frame_size=int(output_rate * frame_duration_ms / 1000),
             )
             logger.info(
-                f"桌面设备: 输入 '{default_input['name']}' "
+                f"音频设备: 输入 '{default_input['name']}' "
                 f"{input_rate}Hz/{input_channels}ch, "
                 f"输出 '{default_output['name']}' "
                 f"{output_rate}Hz/{output_channels}ch"

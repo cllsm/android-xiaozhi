@@ -1,7 +1,9 @@
 """音频 I/O 桥接层.
 
-替代 sounddevice 的 AudioStreamManager，提供统一的音频 I/O 接口。
-桌面端使用 sounddevice（PortAudio），Android 端将替换为原生 AudioRecord/AudioTrack。
+提供统一的音频 I/O 接口，按平台自动选择实现:
+- 桌面端 (Windows/macOS/Linux): sounddevice (PortAudio)
+- Android Termux: sounddevice (pkg install portaudio 后可用)
+- Android 原生 (Chaquopy/JNI): 原生 AudioRecord/AudioTrack (TODO)
 """
 
 import sys
@@ -21,11 +23,36 @@ def _is_android() -> bool:
            'ANDROID_ARGUMENT' in __import__('os').environ
 
 
+def _is_termux() -> bool:
+    """检测是否运行在 Termux 环境.
+
+    Termux 也是 Android，但拥有完整的 Linux 用户空间，
+    portaudio + sounddevice 可以正常工作。
+    """
+    if not _is_android():
+        return False
+    try:
+        import os
+        return os.path.exists('/data/data/com.termux')
+    except Exception:
+        return False
+
+
+def _sounddevice_available() -> bool:
+    """检查 sounddevice 是否可用."""
+    try:
+        import sounddevice  # noqa: F401
+        return True
+    except (ImportError, OSError):
+        return False
+
+
 class AudioBridge:
     """音频 I/O 桥接.
 
-    桌面端：封装 sounddevice（PortAudio）
-    Android 端：封装 AudioRecord/AudioTrack（通过 JNI/UTS）
+    自动检测运行环境并选择最佳音频后端:
+    1. sounddevice (桌面端 & Termux) — 优先
+    2. Android 原生 (Chaquopy/JNI) — 备选
 
     对外接口与 py-xiaozhi 的 AudioStreamManager 保持一致，
     使 AudioCodec 无需修改即可使用。
@@ -37,6 +64,7 @@ class AudioBridge:
         self._output_stream = None
         self._stopped = True
         self._is_android = _is_android()
+        self._is_termux = _is_termux()
 
     def create_streams(
         self,
@@ -49,7 +77,11 @@ class AudioBridge:
             input_callback: 输入回调 (indata, frames, time_info, status)
             output_callback: 输出回调 (outdata, frames, time_info, status)
         """
-        if self._is_android:
+        # Termux 或有 sounddevice 的环境 — 统一走 desktop 路径
+        if self._is_termux or _sounddevice_available():
+            self._create_desktop_streams(input_callback, output_callback)
+        elif self._is_android:
+            # Android 原生环境 (Chaquopy/JNI)，无 sounddevice
             self._create_android_streams(input_callback, output_callback)
         else:
             self._create_desktop_streams(input_callback, output_callback)
@@ -96,12 +128,11 @@ class AudioBridge:
                 if self._input_stream:
                     self._input_stream.stop()
                     self._input_stream.close()
-                # 重新创建输入流
                 if input_callback:
                     import sounddevice as sd
                     blocksize = int(
                         self._config.input_sample_rate
-                        * 20  # FRAME_DURATION
+                        * 20
                         / 1000
                     )
                     self._input_stream = sd.InputStream(
@@ -142,22 +173,24 @@ class AudioBridge:
             logger.error(f"重新初始化流失败: {e}")
             return False
 
-    # ==================== 桌面端实现 ====================
+    # ==================== sounddevice 实现（桌面 + Termux） ====================
 
     def _create_desktop_streams(
         self,
         input_callback: Callable,
         output_callback: Callable,
     ) -> None:
-        """使用 sounddevice 创建桌面端音频流."""
+        """使用 sounddevice 创建音频流（桌面端 & Termux 通用）."""
         try:
             import sounddevice as sd
         except ImportError:
-            logger.error("桌面端需要 sounddevice: pip install sounddevice")
+            logger.error(
+                "sounddevice 不可用。\n"
+                "  桌面端: pip install sounddevice\n"
+                "  Termux: pkg install portaudio && pip install sounddevice"
+            )
             raise
 
-        # 计算块大小
-        # 使用 20ms 帧长（桌面端 x86）
         frame_duration_ms = 20
 
         input_blocksize = int(
@@ -167,24 +200,32 @@ class AudioBridge:
             self._config.output_sample_rate * frame_duration_ms / 1000
         )
 
+        platform_label = "Termux" if self._is_termux else "桌面"
         logger.info(
-            f"创建桌面音频流: "
+            f"创建 {platform_label} 音频流: "
             f"输入 {self._config.input_sample_rate}Hz/{self._config.input_channels}ch "
             f"(block={input_blocksize}), "
             f"输出 {self._config.output_sample_rate}Hz/{self._config.output_channels}ch "
             f"(block={output_blocksize})"
         )
 
-        self._input_stream = sd.InputStream(
-            device=self._config.input_device_id,
-            samplerate=self._config.input_sample_rate,
-            channels=self._config.input_channels,
-            dtype=np.float32,
-            blocksize=input_blocksize,
-            callback=input_callback,
-            latency="low",
-        )
+        # 输入流（Termux/Android 可能无法访问麦克风，前端 App 负责录音）
+        try:
+            self._input_stream = sd.InputStream(
+                device=self._config.input_device_id,
+                samplerate=self._config.input_sample_rate,
+                channels=self._config.input_channels,
+                dtype=np.float32,
+                blocksize=input_blocksize,
+                callback=input_callback,
+                latency="low",
+            )
+        except Exception as e:
+            logger.warning(f"输入流创建失败（麦克风不可用）: {e}")
+            logger.info("前端 App 将负责麦克风录音，后端仅处理输出播放")
+            self._input_stream = None
 
+        # 输出流（扬声器播放，必须成功）
         self._output_stream = sd.OutputStream(
             device=self._config.output_device_id,
             samplerate=self._config.output_sample_rate,
@@ -195,7 +236,7 @@ class AudioBridge:
             latency="low",
         )
 
-    # ==================== Android 端实现（TODO） ====================
+    # ==================== Android 原生实现（Chaquopy / JNI） ====================
 
     def _create_android_streams(
         self,
@@ -204,8 +245,12 @@ class AudioBridge:
     ) -> None:
         """使用 Android AudioRecord/AudioTrack 创建音频流.
 
-        TODO: 通过 UTS 原生插件或 Chaquopy JNI 实现
+        仅在 Chaquopy/JNI 环境下使用（APK 内嵌模式）。
+        Termux 环境不会走到这里（已走 sounddevice 路径）。
         """
         raise NotImplementedError(
-            "Android 原生音频桥接尚未实现，请使用桌面模式开发调试"
+            "Android 原生音频桥接尚未实现。\n"
+            "如果在 Termux 中运行，请执行:\n"
+            "  pkg install portaudio\n"
+            "  pip install sounddevice"
         )

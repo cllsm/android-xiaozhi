@@ -2,7 +2,13 @@ from collections import deque
 from typing import Optional
 
 import numpy as np
-import soxr
+
+try:
+    import soxr
+    SOXR_AVAILABLE = True
+except ImportError:
+    soxr = None  # type: ignore
+    SOXR_AVAILABLE = False
 
 from backend.log import get_logger
 from backend.utils.audio_utils import downmix_to_mono, upmix_mono_to_channels
@@ -10,10 +16,34 @@ from backend.utils.audio_utils import downmix_to_mono, upmix_mono_to_channels
 logger = get_logger()
 
 
+def _numpy_resample(audio: np.ndarray, from_rate: int, to_rate: int) -> np.ndarray:
+    """使用 numpy 线性插值进行重采样（soxr 不可用时的降级方案）."""
+    if from_rate == to_rate or len(audio) == 0:
+        return audio
+    ratio = to_rate / from_rate
+    new_len = int(len(audio) * ratio)
+    if new_len == 0:
+        return np.array([], dtype=np.float32)
+    old_indices = np.linspace(0, len(audio) - 1, new_len)
+    return np.interp(old_indices, np.arange(len(audio)), audio).astype(np.float32)
+
+
+class NumpyResampler:
+    """numpy 降级重采样器，接口兼容 soxr.ResampleStream."""
+
+    def __init__(self, from_rate: int, to_rate: int):
+        self.from_rate = from_rate
+        self.to_rate = to_rate
+
+    def resample_chunk(self, audio: np.ndarray, last: bool = False) -> np.ndarray:
+        return _numpy_resample(audio, self.from_rate, self.to_rate)
+
+
 class AudioConverter:
     """音频格式转换器
 
     负责采样率转换和声道转换，内部维护缓冲区以凑够目标帧大小。
+    soxr 不可用时自动降级为 numpy 线性插值重采样。
     """
 
     def __init__(self):
@@ -26,6 +56,22 @@ class AudioConverter:
         self.needs_output_upmix = False
         self.input_channels = 1
         self.output_channels = 1
+
+        if not SOXR_AVAILABLE:
+            logger.info("soxr 不可用，使用 numpy 重采样降级方案")
+
+    def _create_resampler(self, from_rate: int, to_rate: int, num_channels: int):
+        """创建重采样器（优先 soxr，降级 numpy）."""
+        if SOXR_AVAILABLE:
+            return soxr.ResampleStream(
+                from_rate,
+                to_rate,
+                num_channels=num_channels,
+                dtype="float32",
+                quality="QQ",
+            )
+        else:
+            return NumpyResampler(from_rate, to_rate)
 
     def setup_input_converter(
         self, from_rate: int, to_rate: int, from_channels: int, to_channels: int = 1
@@ -45,13 +91,7 @@ class AudioConverter:
             logger.info(f"输入声道下混: {from_channels}ch → {to_channels}ch")
 
         if from_rate != to_rate:
-            self.input_resampler = soxr.ResampleStream(
-                from_rate,
-                to_rate,
-                num_channels=to_channels,  # 下混后的声道数
-                dtype="float32",
-                quality="QQ",  # 快速质量（适合实时处理）
-            )
+            self.input_resampler = self._create_resampler(from_rate, to_rate, to_channels)
             logger.info(f"输入重采样: {from_rate}Hz → {to_rate}Hz")
 
     def setup_output_converter(
@@ -69,13 +109,7 @@ class AudioConverter:
         self.needs_output_upmix = to_channels > from_channels
 
         if from_rate != to_rate:
-            self.output_resampler = soxr.ResampleStream(
-                from_rate,
-                to_rate,
-                num_channels=from_channels,  # 上混前的声道数
-                dtype="float32",
-                quality="QQ",
-            )
+            self.output_resampler = self._create_resampler(from_rate, to_rate, from_channels)
             logger.info(f"输出重采样: {from_rate}Hz → {to_rate}Hz")
 
         if self.needs_output_upmix:
@@ -178,7 +212,7 @@ class AudioConverter:
         logger.debug("音频转换器缓冲区已清空")
 
     def close(self):
-        """释放 soxr 重采样器，防止 nanobind C++ 对象泄漏."""
+        """释放重采样器."""
         self.clear_buffers()
         self.input_resampler = None
         self.output_resampler = None
