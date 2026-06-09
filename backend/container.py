@@ -593,6 +593,10 @@ class AndroidServiceContainer:
         self._wake_word_monitoring = False
         logger.info("唤醒词持续监听模式已停止")
 
+    # 前端音频诊断计数器
+    _frontend_audio_count: int = 0
+    _frontend_audio_drop_logged: dict = {}  # 按原因记录是否已输出过日志
+
     async def on_frontend_audio(self, pcm_data: bytes) -> None:
         """接收前端发来的麦克风 PCM 音频.
 
@@ -609,8 +613,20 @@ class AndroidServiceContainer:
         try:
             import numpy as np
 
+            AndroidServiceContainer._frontend_audio_count += 1
+            count = AndroidServiceContainer._frontend_audio_count
+
             # 解码 PCM（两种模式共用）
             audio = np.frombuffer(pcm_data, dtype=np.float32)
+
+            # 前 5 帧打印诊断信息
+            if count <= 5:
+                max_val = float(np.abs(audio).max()) if len(audio) > 0 else 0.0
+                rms_val = float(np.sqrt(np.mean(audio ** 2))) if len(audio) > 0 else 0.0
+                logger.info(
+                    f"前端音频帧 #{count}: {len(audio)} samples, "
+                    f"size={len(pcm_data)} bytes, max={max_val:.4f}, rms={rms_val:.4f}"
+                )
 
             # --- 唤醒词监听模式: 将音频传给检测器 ---
             if self._wake_word_monitoring:
@@ -645,10 +661,14 @@ class AndroidServiceContainer:
 
             # --- 正常对话模式: 编码并发送给远程服务器 ---
             if not self.protocol or not self.protocol.is_audio_channel_opened():
+                self._log_drop_once("channel_closed", count,
+                                    "远程服务器未连接或音频通道未打开，音频被丢弃")
                 return
 
             # 检查是否应该发送（LISTENING 状态）
             if not self.state.should_capture_audio():
+                self._log_drop_once("not_listening", count,
+                                    f"设备状态非 LISTENING (当前: {self.state.device_state})，音频被丢弃")
                 return
 
             from backend.audio_codecs.audio_codec import AudioConfig
@@ -663,7 +683,15 @@ class AndroidServiceContainer:
                     codec = plugin.codec
                     break
 
-            if codec and len(audio) >= frame_size:
+            if not codec:
+                # AudioPlugin 未初始化或 codec 不可用 → 使用独立 Opus 编码器
+                codec = self._get_standalone_opus_encoder()
+                if not codec:
+                    self._log_drop_once("no_codec", count,
+                                        "Opus 编码器不可用，音频被丢弃")
+                    return
+
+            if len(audio) >= frame_size:
                 # 只取整数帧
                 num_frames = len(audio) // frame_size
                 for i in range(num_frames):
@@ -671,8 +699,55 @@ class AndroidServiceContainer:
                     encoded = codec.opus_codec.encode(frame, frame_size)
                     if encoded:
                         await self.protocol.send_audio(encoded)
+            elif count <= 5:
+                logger.debug(f"前端音频帧 #{count} 太短 ({len(audio)} < {frame_size})，跳过")
+
         except Exception as e:
-            logger.debug(f"处理前端音频失败: {e}")
+            logger.warning(f"处理前端音频失败: {e}", exc_info=True)
+
+    def _log_drop_once(self, reason: str, count: int, message: str) -> None:
+        """对每种丢弃原因只输出前 3 次日志，避免刷屏. """
+        if reason not in AndroidServiceContainer._frontend_audio_drop_logged:
+            AndroidServiceContainer._frontend_audio_drop_logged[reason] = 0
+        AndroidServiceContainer._frontend_audio_drop_logged[reason] += 1
+        drop_count = AndroidServiceContainer._frontend_audio_drop_logged[reason]
+        if drop_count <= 3:
+            logger.warning(f"前端音频 #{count} 丢弃: {message}")
+        elif drop_count == 50 or drop_count == 500:
+            logger.info(f"前端音频已因 [{reason}] 丢弃 {drop_count} 帧")
+
+    def _get_standalone_opus_encoder(self):
+        """获取独立 Opus 编码器（当 AudioPlugin.codec 不可用时的备选方案）.
+
+        创建一个仅包含 OpusCodec 的轻量编码器，不依赖 sounddevice。
+        """
+        if hasattr(self, '_standalone_codec') and self._standalone_codec:
+            return self._standalone_codec
+
+        try:
+            from backend.audio_codecs.opus_codec import OpusCodec
+            from backend.constants.constants import AudioConfig
+
+            AudioConfig.reload()
+            opus = OpusCodec(
+                input_sample_rate=AudioConfig.INPUT_SAMPLE_RATE,
+                output_sample_rate=AudioConfig.OUTPUT_SAMPLE_RATE,
+                channels=AudioConfig.CHANNELS,
+            )
+            opus.initialize()
+
+            # 包装为简易 codec 对象（只需 opus_codec 属性）
+            class _StandaloneCodec:
+                def __init__(self, op):
+                    self.opus_codec = op
+
+            self._standalone_codec = _StandaloneCodec(opus)
+            logger.info("已创建独立 Opus 编码器（AudioPlugin.codec 不可用时的备选）")
+            return self._standalone_codec
+        except Exception as e:
+            logger.error(f"创建独立 Opus 编码器失败: {e}")
+            self._standalone_codec = None
+            return None
 
     async def abort_speaking(self, reason: str) -> None:
         """中止语音输出.

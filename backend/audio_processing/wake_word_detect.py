@@ -45,8 +45,8 @@ class WakeWordDetector:
         self._num_threads = 4
         self._provider = "cpu"
         self._max_active_paths = 2
-        self._keywords_score = 1.8
-        self._keywords_threshold = 0.2
+        self._keywords_score = 1.0     # 降低关键词得分（更容易匹配）
+        self._keywords_threshold = 0.1  # 降低检测阈值（更灵敏）
         self._num_trailing_blanks = 1
 
     async def initialize(self, model_path: Optional[str] = None) -> bool:
@@ -434,6 +434,13 @@ class WakeWordDetector:
         if audio_data is None or len(audio_data) == 0:
             return
 
+        if not hasattr(self, '_process_count'):
+            self._process_count = 0
+            self._decode_count = 0
+            self._result_count = 0
+
+        self._process_count += 1
+
         detected_result = None
 
         with self._onnx_lock:
@@ -445,13 +452,37 @@ class WakeWordDetector:
                     sample_rate=self._sample_rate, waveform=audio_data
                 )
 
-                if self._keyword_spotter.is_ready(self._stream):
+                is_ready = self._keyword_spotter.is_ready(self._stream)
+
+                if is_ready:
+                    self._decode_count += 1
                     self._keyword_spotter.decode_stream(self._stream)
                     result = self._keyword_spotter.get_result(self._stream)
 
+                    # 每次解码都打印结果，帮助诊断
+                    if self._decode_count <= 5 or self._decode_count % 10 == 0:
+                        audio_max = float(np.abs(audio_data).max()) if len(audio_data) > 0 else 0.0
+                        logger.info(
+                            f"唤醒词解码 #{self._decode_count}: result='{result}' (type={type(result).__name__}), "
+                            f"bool={bool(result) if result is not None else 'N/A'}, "
+                            f"audio_max={audio_max:.4f}"
+                        )
+
                     if result:
+                        self._result_count += 1
+                        logger.info(f"★★★ 唤醒词检测到! result='{result}'")
                         detected_result = result
                         self._keyword_spotter.reset_stream(self._stream)
+
+                # 每 100 次处理打印一次诊断日志
+                if self._process_count % 100 == 0:
+                    audio_max = float(np.abs(audio_data).max()) if len(audio_data) > 0 else 0.0
+                    logger.info(
+                        f"唤醒词检测器诊断: 已处理 {self._process_count} 帧, "
+                        f"decode {self._decode_count} 次, 检测到 {self._result_count} 次, "
+                        f"当前帧 max={audio_max:.4f}, is_ready={is_ready}, "
+                        f"队列={self._audio_queue.qsize() if self._audio_queue else 0}"
+                    )
             except Exception as e:
                 logger.debug(f"处理音频时出错: {e}")
 

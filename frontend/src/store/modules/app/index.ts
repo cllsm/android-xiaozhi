@@ -3,7 +3,7 @@
  */
 import { backendService } from '@/api/backend'
 import { AudioPlayer } from '@/utils/audio-player'
-import { AudioRecorder } from '@/utils/audio-recorder'
+import { audioRecorder } from '@/utils/audio-recorder'
 import { useSettingsStore } from '@/store'
 
 export const useAppStore = defineStore('app', () => {
@@ -19,10 +19,12 @@ export const useAppStore = defineStore('app', () => {
 
   // ========== 唤醒词持续监听 ==========
   const isWakeWordMonitoring = ref(false)
+  /** 开关：开启后对话结束自动恢复唤醒词监听 */
+  const wakeWordAutoMonitor = ref(false)
 
   // ========== 音频实例 ==========
   const audioPlayer = new AudioPlayer()
-  const audioRecorder = new AudioRecorder()
+  // audioRecorder 来自全局单例，页面 renderjs 绑定在同一个实例上
 
   // ========== 连接 ==========
 
@@ -68,6 +70,12 @@ export const useAppStore = defineStore('app', () => {
       // IDLE 时停止音频播放
       if (newState === 'IDLE') {
         audioPlayer.stop()
+
+        // ★ 自动恢复唤醒词监听：对话结束后如果开关开启，自动重新开始监听
+        if (wakeWordAutoMonitor.value && !isWakeWordMonitoring.value && isBackendConnected.value) {
+          console.log('[AppStore] 对话结束，自动恢复唤醒词监听')
+          startWakeWordMonitoring()
+        }
       }
     })
 
@@ -229,7 +237,6 @@ export const useAppStore = defineStore('app', () => {
         await audioRecorder.start((pcmData: ArrayBuffer) => {
           backendService.sendAudio(pcmData)
         })
-        // 报告录音方案给后端日志
         console.log(`[AppStore] 录音方案: ${audioRecorder.method}`)
       }
       catch (e: any) {
@@ -239,6 +246,7 @@ export const useAppStore = defineStore('app', () => {
         return
       }
       isWakeWordMonitoring.value = true
+      wakeWordAutoMonitor.value = true
     }
     catch (e: any) {
       errorMessage.value = e.message || '启动唤醒词监听失败'
@@ -247,6 +255,8 @@ export const useAppStore = defineStore('app', () => {
 
   /** 停止唤醒词持续监听模式 */
   async function stopWakeWordMonitoring() {
+    // 用户手动停止 → 同时关闭自动监听开关
+    wakeWordAutoMonitor.value = false
     try {
       audioRecorder.stop()
       await backendService.sendCommand('stop_wake_word_monitoring')
@@ -269,6 +279,7 @@ export const useAppStore = defineStore('app', () => {
     currentEmotion,
     chatHistory,
     isWakeWordMonitoring,
+    wakeWordAutoMonitor,
     connectBackend,
     startListening,
     stopListening,

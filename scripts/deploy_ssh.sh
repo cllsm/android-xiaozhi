@@ -88,7 +88,7 @@ ok "打包完成: ${TAR_SIZE}"
 
 # ---- 3. 传输到手机 ----
 info "传输文件到手机 (${SSH_TARGET})..."
-scp -P "$PHONE_PORT" "$TMP_TAR" "${SSH_TARGET}:/tmp/xiaozhi-backend.tar.gz"
+scp -P "$PHONE_PORT" "$TMP_TAR" "${SSH_TARGET}:~/tmp-xiaozhi-backend.tar.gz"
 ok "文件传输完成"
 
 # ---- 4. 远程执行部署 ----
@@ -109,8 +109,8 @@ PROJECT_DIR="$HOME/xiaozhi"
 info "解压后端文件..."
 rm -rf "$PROJECT_DIR"
 mkdir -p "$PROJECT_DIR"
-tar xzf /tmp/xiaozhi-backend.tar.gz -C "$PROJECT_DIR"
-rm -f /tmp/xiaozhi-backend.tar.gz
+tar xzf ~/tmp-xiaozhi-backend.tar.gz -C "$PROJECT_DIR"
+rm -f ~/tmp-xiaozhi-backend.tar.gz
 ok "文件解压完成"
 
 # 安装依赖（首次部署时）
