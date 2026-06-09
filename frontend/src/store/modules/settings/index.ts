@@ -1,9 +1,7 @@
 /**
  * 设置状态管理
  */
-import { defineStore } from 'pinia'
-import { ref } from 'vue'
-import { backendService } from '@/services/backend'
+import { backendService } from '@/api/backend'
 
 export const useSettingsStore = defineStore('settings', () => {
   const websocketUrl = ref('wss://api.xiaozhi.com/ws')
@@ -12,6 +10,8 @@ export const useSettingsStore = defineStore('settings', () => {
   const wakeWordEnabled = ref(true)
   const wakeWordSensitivity = ref(0.2)
   const opusOutputSampleRate = ref(24000)
+  /** 后端服务地址（App 模式下使用，默认电脑局域网 IP） */
+  const backendHost = ref('127.0.0.1')
   const loaded = ref(false)
 
   /** 从后端加载设置 */
@@ -29,8 +29,13 @@ export const useSettingsStore = defineStore('settings', () => {
         wakeWordEnabled.value = ww.ENABLED ?? wakeWordEnabled.value
         wakeWordSensitivity.value = ww.SENSITIVITY ?? wakeWordSensitivity.value
       }
+      // 加载后端地址配置
+      if (config.APP_OPTIONS?.BACKEND_HOST) {
+        backendHost.value = config.APP_OPTIONS.BACKEND_HOST
+      }
       loaded.value = true
-    } catch (e) {
+    }
+    catch (e) {
       console.warn('[SettingsStore] 加载设置失败:', e)
     }
   }
@@ -50,7 +55,12 @@ export const useSettingsStore = defineStore('settings', () => {
         key: 'SYSTEM_OPTIONS.WAKE_WORD.ENABLED',
         value: wakeWordEnabled.value,
       })
-    } catch (e: any) {
+      await backendService.httpPut('/api/config', {
+        key: 'APP_OPTIONS.BACKEND_HOST',
+        value: backendHost.value,
+      })
+    }
+    catch (e: any) {
       console.error('[SettingsStore] 保存设置失败:', e)
       throw e
     }
@@ -63,6 +73,7 @@ export const useSettingsStore = defineStore('settings', () => {
     wakeWordEnabled,
     wakeWordSensitivity,
     opusOutputSampleRate,
+    backendHost,
     loaded,
     loadSettings,
     saveSettings,

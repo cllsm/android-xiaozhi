@@ -1,9 +1,10 @@
 /**
  * 应用全局状态
  */
-import { defineStore } from 'pinia'
-import { ref } from 'vue'
-import { backendService } from '@/services/backend'
+import { backendService } from '@/api/backend'
+import { AudioPlayer } from '@/utils/audio-player'
+import { AudioRecorder } from '@/utils/audio-recorder'
+import { useSettingsStore } from '@/store'
 
 export const useAppStore = defineStore('app', () => {
   // ========== 状态 ==========
@@ -16,15 +17,30 @@ export const useAppStore = defineStore('app', () => {
   const currentEmotion = ref<string>('neutral')
   const chatHistory = ref<Array<{ text: string; isUser: boolean; timestamp: number }>>([])
 
+  // ========== 音频实例 ==========
+  const audioPlayer = new AudioPlayer()
+  const audioRecorder = new AudioRecorder()
+
   // ========== 连接 ==========
 
   /** 连接后端 */
   async function connectBackend() {
     try {
-      // 注册事件监听
+      // 同步 settings 中的后端地址到 BackendService
+      try {
+        const settingsStore = useSettingsStore()
+        if (settingsStore.backendHost) {
+          backendService.setAppBackendHost(settingsStore.backendHost)
+        }
+      }
+      catch {
+        // settings store 未初始化，使用默认地址
+      }
+
       _registerEventListeners()
       await backendService.connect()
-    } catch (e) {
+    }
+    catch (e) {
       console.error('[AppStore] 连接后端失败:', e)
       errorMessage.value = '无法连接到后端服务'
     }
@@ -32,11 +48,9 @@ export const useAppStore = defineStore('app', () => {
 
   /** 注册所有后端事件监听 */
   function _registerEventListeners() {
-    // 后端连接状态
     backendService.on('backend_connected', () => {
       isBackendConnected.value = true
       errorMessage.value = null
-      // 连接后拉取状态
       _fetchStatus()
     })
 
@@ -44,22 +58,35 @@ export const useAppStore = defineStore('app', () => {
       isBackendConnected.value = false
     })
 
-    // 设备状态变更
     backendService.on('state_change', (data: any) => {
-      deviceState.value = (data.state || '').toUpperCase()
+      const newState = (data.state || '').toUpperCase()
+      deviceState.value = newState
+
+      // IDLE 时停止音频播放
+      if (newState === 'IDLE') {
+        audioPlayer.stop()
+      }
     })
 
-    // 服务器连接状态
     backendService.on('connection_status', (data: any) => {
       isConnected.value = data.connected
     })
 
-    // 文本回复（仅 TTS/AI 回复加入聊天记录）
     backendService.on('text_response', (data: any) => {
-      if (!data.text) return
+      if (!data.text)
+        return
       currentText.value = data.text
-      // STT 来源不加入聊天记录（用户输入已由 sendText 处理）
-      if (data.source === 'stt') return
+      // STT 最终识别结果 → 显示为用户消息
+      if (data.source === 'stt') {
+        if (data.is_final) {
+          chatHistory.value.push({
+            text: data.text,
+            isUser: true,
+            timestamp: Date.now(),
+          })
+        }
+        return
+      }
       const isFinal = data.is_final !== false
       if (isFinal) {
         chatHistory.value.push({
@@ -70,14 +97,18 @@ export const useAppStore = defineStore('app', () => {
       }
     })
 
-    // 情绪
     backendService.on('emotion', (data: any) => {
       currentEmotion.value = data.emotion || 'neutral'
     })
 
-    // 错误
     backendService.on('error', (data: any) => {
       errorMessage.value = data.message
+    })
+
+    // 后端播放模式：音频由后端 sounddevice 播放，前端不播放
+    // 保留监听用于调试
+    backendService.on('audio', (_pcmData: ArrayBuffer) => {
+      // no-op: 音频由后端统一播放
     })
   }
 
@@ -88,44 +119,62 @@ export const useAppStore = defineStore('app', () => {
       deviceState.value = (status.device_state || 'IDLE').toUpperCase()
       listeningMode.value = (status.listening_mode || 'REALTIME').toUpperCase()
       isConnected.value = status.connected
-    } catch (e) {
+    }
+    catch (e) {
       console.warn('[AppStore] 获取状态失败:', e)
     }
   }
 
   // ========== 操作 ==========
 
-  /** 开始监听 */
   async function startListening(mode?: string) {
     try {
       errorMessage.value = null
+
+      // 先通知后端进入 LISTENING 状态，再启动麦克风
+      // 避免音频在后端 LISTENING 之前发送导致丢帧
       await backendService.sendCommand('start_listening', { mode: mode || listeningMode.value })
-    } catch (e: any) {
+
+      // 启动麦克风录音
+      try {
+        await audioRecorder.start((pcmData: ArrayBuffer) => {
+          backendService.sendAudio(pcmData)
+        })
+      }
+      catch (e: any) {
+        console.warn('[AppStore] 麦克风录音启动失败:', e)
+        // 录音失败不阻断对话流程，用户仍可文字输入
+      }
+    }
+    catch (e: any) {
       errorMessage.value = e.message || '启动监听失败'
     }
   }
 
-  /** 停止监听 */
   async function stopListening() {
     try {
+      audioRecorder.stop()
       await backendService.sendCommand('stop_listening')
-    } catch (e: any) {
+    }
+    catch (e: any) {
       errorMessage.value = e.message || '停止监听失败'
     }
   }
 
-  /** 中止说话 */
   async function abortSpeaking() {
     try {
+      audioPlayer.stop()
+      audioRecorder.stop()
       await backendService.sendCommand('abort_speaking')
-    } catch (e: any) {
+    }
+    catch (e: any) {
       errorMessage.value = e.message || '中止失败'
     }
   }
 
-  /** 发送文本消息 */
   async function sendText(text: string) {
-    if (!text.trim()) return
+    if (!text.trim())
+      return
     chatHistory.value.push({
       text: text.trim(),
       isUser: true,
@@ -133,31 +182,31 @@ export const useAppStore = defineStore('app', () => {
     })
     try {
       await backendService.sendCommand('send_text', { text: text.trim() })
-    } catch (e: any) {
+    }
+    catch (e: any) {
       errorMessage.value = e.message || '发送失败'
     }
   }
 
-  /** 连接服务器 */
   async function connectServer() {
     try {
       await backendService.sendCommand('connect_server')
-    } catch (e: any) {
+    }
+    catch (e: any) {
       errorMessage.value = e.message || '连接服务器失败'
     }
   }
 
-  /** 断开服务器 */
   async function disconnectServer() {
     try {
       await backendService.sendCommand('disconnect_server')
-    } catch (e: any) {
+    }
+    catch (e: any) {
       errorMessage.value = e.message || '断开失败'
     }
   }
 
   return {
-    // 状态
     deviceState,
     listeningMode,
     isConnected,
@@ -166,7 +215,6 @@ export const useAppStore = defineStore('app', () => {
     currentText,
     currentEmotion,
     chatHistory,
-    // 操作
     connectBackend,
     startListening,
     stopListening,

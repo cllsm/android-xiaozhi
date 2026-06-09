@@ -1,9 +1,6 @@
 /**
  * 音频状态管理
  */
-import { defineStore } from 'pinia'
-import { ref } from 'vue'
-
 export const useAudioStore = defineStore('audio', () => {
   const isRecording = ref(false)
   const isPlaying = ref(false)

@@ -8,7 +8,7 @@ export function formatTimestamp(ts: number): string {
   return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`
 }
 
-/** 设备状态中文标签 */
+/** 设备状态标签 */
 export const stateLabels: Record<string, string> = {
   IDLE: '待机',
   CONNECTING: '连接中',
@@ -16,7 +16,7 @@ export const stateLabels: Record<string, string> = {
   SPEAKING: '回复中',
 }
 
-/** 情绪 emoji 映射 */
+/** 情绪表情映射 */
 export const emotionEmojis: Record<string, string> = {
   neutral: '',
   happy: '😊',
@@ -33,7 +33,7 @@ export function getStateLabel(state: string): string {
   return stateLabels[state] || state
 }
 
-/** 获取情绪 emoji */
+/** 获取情绪表情 */
 export function getEmotionEmoji(emotion: string): string {
   return emotionEmojis[emotion] || '😊'
 }
