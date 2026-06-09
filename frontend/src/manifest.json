@@ -6,21 +6,50 @@
   "versionCode": "100",
   "transformPx": false,
   "app-plus": {
+    "usingComponents": true,
+    "nvueStyleCompiler": "uni-app",
+    "compilerVersion": 3,
+    "splashscreen": {
+      "alwaysShowBeforeRender": true,
+      "waiting": true,
+      "autoclose": true,
+      "delay": 0
+    },
+    "modules": {},
     "distribute": {
       "android": {
         "minSdkVersion": 26,
         "targetSdkVersion": 33,
         "permissions": [
+          "<uses-permission android:name=\"android.permission.CHANGE_NETWORK_STATE\"/>",
+          "<uses-permission android:name=\"android.permission.ACCESS_WIFI_STATE\"/>",
+          "<uses-permission android:name=\"android.permission.ACCESS_NETWORK_STATE\"/>",
+          "<uses-permission android:name=\"android.permission.CAMERA\"/>",
           "<uses-permission android:name=\"android.permission.RECORD_AUDIO\"/>",
           "<uses-permission android:name=\"android.permission.INTERNET\"/>",
           "<uses-permission android:name=\"android.permission.FOREGROUND_SERVICE\"/>",
           "<uses-permission android:name=\"android.permission.WAKE_LOCK\"/>",
-          "<uses-permission android:name=\"android.permission.CAMERA\"/>",
-          "<uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\"/>"
+          "<uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\"/>",
+          "<uses-permission android:name=\"android.permission.VIBRATE\"/>",
+          "<uses-permission android:name=\"android.permission.READ_PHONE_STATE\"/>"
         ]
-      }
+      },
+      "ios": {},
+      "sdkConfigs": {}
     }
   },
+  "quickapp": {},
+  "mp-weixin": {
+    "appid": "",
+    "setting": {
+      "urlCheck": false
+    },
+    "usingComponents": true
+  },
+  "uniStatistics": {
+    "enable": false
+  },
+  "vueVersion": "3",
   "h5": {
     "title": "小智",
     "router": {
@@ -28,7 +57,6 @@
     },
     "devServer": {
       "port": 5173
-    },
-    "sdkConfigs": {}
+    }
   }
 }

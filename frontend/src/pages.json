@@ -1,22 +1,36 @@
 {
+  "easycom": {
+    "custom": {
+      "^u--(.*)": "uview-plus/components/u-$1/u-$1.vue",
+      "^up-(.*)": "uview-plus/components/u-$1/u-$1.vue",
+      "^u-([^-].*)": "uview-plus/components/u-$1/u-$1.vue"
+    }
+  },
   "pages": [
     {
-      "path": "pages/index/index",
+      "path": "pages/tab/home/index",
       "style": {
         "navigationBarTitleText": "小智"
       }
     },
     {
-      "path": "pages/settings/settings",
+      "path": "pages/tab/settings/index",
       "style": {
         "navigationBarTitleText": "设置"
       }
-    },
+    }
+  ],
+  "subPackages": [
     {
-      "path": "pages/activation/activation",
-      "style": {
-        "navigationBarTitleText": "设备激活"
-      }
+      "root": "pages/common",
+      "pages": [
+        {
+          "path": "activation/index",
+          "style": {
+            "navigationBarTitleText": "设备激活"
+          }
+        }
+      ]
     }
   ],
   "globalStyle": {

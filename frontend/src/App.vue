@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import { onLaunch, onHide } from '@dcloudio/uni-app'
-import { useAppStore } from '@/store/app'
+import { useAppStore } from '@/store'
+
+const appStore = useAppStore()
 
 onLaunch(() => {
   console.log('[App] 应用启动')
-  const appStore = useAppStore()
   appStore.connectBackend()
+})
+
+onShow(() => {
+  console.log('[App] App Show')
 })
 
 onHide(() => {
@@ -13,11 +17,7 @@ onHide(() => {
 })
 </script>
 
-<style>
-/* 全局样式 */
-page {
-  background-color: #16213e;
-  color: #e0e0e0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-}
+<style lang="scss">
+@import 'uview-plus/index.scss';
+@import '@/static/styles/common.scss';
 </style>
