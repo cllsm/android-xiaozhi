@@ -232,9 +232,14 @@ class BackendService {
   }
 
   /** 发送音频二进制数据（麦克风 PCM） */
+  private _audioSendCount = 0
   sendAudio(data: ArrayBuffer): void {
     if (!this.ws || !this._isConnected)
       return
+    this._audioSendCount++
+    if (this._audioSendCount <= 3) {
+      console.log(`[BackendService] sendAudio #${this._audioSendCount}, size=${data.byteLength}, isBuffer=${data instanceof ArrayBuffer}`)
+    }
     // #ifdef H5
     if (this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(data)

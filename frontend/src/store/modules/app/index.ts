@@ -17,6 +17,9 @@ export const useAppStore = defineStore('app', () => {
   const currentEmotion = ref<string>('neutral')
   const chatHistory = ref<Array<{ text: string; isUser: boolean; timestamp: number }>>([])
 
+  // ========== 唤醒词持续监听 ==========
+  const isWakeWordMonitoring = ref(false)
+
   // ========== 音频实例 ==========
   const audioPlayer = new AudioPlayer()
   const audioRecorder = new AudioRecorder()
@@ -105,6 +108,13 @@ export const useAppStore = defineStore('app', () => {
       errorMessage.value = data.message
     })
 
+    // 唤醒词检测事件: 后端检测到唤醒词后自动开始对话
+    backendService.on('wake_word_detected', (_data: any) => {
+      isWakeWordMonitoring.value = false
+      // 后端已自动连接服务器并开始对话，刷新状态即可
+      _fetchStatus()
+    })
+
     // 后端播放模式：音频由后端 sounddevice 播放，前端不播放
     // 保留监听用于调试
     backendService.on('audio', (_pcmData: ArrayBuffer) => {
@@ -140,10 +150,11 @@ export const useAppStore = defineStore('app', () => {
         await audioRecorder.start((pcmData: ArrayBuffer) => {
           backendService.sendAudio(pcmData)
         })
+        console.log(`[AppStore] 录音方案: ${audioRecorder.method}`)
       }
       catch (e: any) {
         console.warn('[AppStore] 麦克风录音启动失败:', e)
-        // 录音失败不阻断对话流程，用户仍可文字输入
+        errorMessage.value = `录音失败: ${e.message || '请检查权限'}`
       }
     }
     catch (e: any) {
@@ -206,6 +217,48 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  // ========== 唤醒词持续监听 ==========
+
+  /** 启动唤醒词持续监听模式 */
+  async function startWakeWordMonitoring() {
+    try {
+      errorMessage.value = null
+      audioRecorder.stop()
+      await backendService.sendCommand('start_wake_word_monitoring')
+      try {
+        await audioRecorder.start((pcmData: ArrayBuffer) => {
+          backendService.sendAudio(pcmData)
+        })
+        // 报告录音方案给后端日志
+        console.log(`[AppStore] 录音方案: ${audioRecorder.method}`)
+      }
+      catch (e: any) {
+        console.warn('[AppStore] 唤醒词监听录音启动失败:', e)
+        errorMessage.value = `麦克风启动失败: ${e.message || '请检查权限'}`
+        await backendService.sendCommand('stop_wake_word_monitoring')
+        return
+      }
+      isWakeWordMonitoring.value = true
+    }
+    catch (e: any) {
+      errorMessage.value = e.message || '启动唤醒词监听失败'
+    }
+  }
+
+  /** 停止唤醒词持续监听模式 */
+  async function stopWakeWordMonitoring() {
+    try {
+      audioRecorder.stop()
+      await backendService.sendCommand('stop_wake_word_monitoring')
+    }
+    catch (e: any) {
+      errorMessage.value = e.message || '停止监听失败'
+    }
+    finally {
+      isWakeWordMonitoring.value = false
+    }
+  }
+
   return {
     deviceState,
     listeningMode,
@@ -215,6 +268,7 @@ export const useAppStore = defineStore('app', () => {
     currentText,
     currentEmotion,
     chatHistory,
+    isWakeWordMonitoring,
     connectBackend,
     startListening,
     stopListening,
@@ -222,5 +276,7 @@ export const useAppStore = defineStore('app', () => {
     sendText,
     connectServer,
     disconnectServer,
+    startWakeWordMonitoring,
+    stopWakeWordMonitoring,
   }
 })

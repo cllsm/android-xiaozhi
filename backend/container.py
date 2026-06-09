@@ -131,6 +131,10 @@ class PluginCommandsAdapter:
         """调度命令（非阻塞）."""
         self._container.tasks.schedule_nowait(fn, *args, **kwargs)
 
+    def stop_wake_word_monitoring(self) -> None:
+        """停止唤醒词持续监听模式."""
+        self._container._wake_word_monitoring = False
+
     def request_shutdown(self) -> None:
         """请求关闭应用."""
         self._container.tasks.request_shutdown()
@@ -190,6 +194,10 @@ class AndroidServiceContainer:
 
         # 中止标志
         self._aborted = False
+
+        # 唤醒词持续监听标志（前端持续发音频给后端检测）
+        self._wake_word_monitoring = False
+        self._monitoring_audio_count = 0  # 调试用：音频帧计数
 
         # 关闭状态（防重入）
         self._shutting_down = False
@@ -304,20 +312,24 @@ class AndroidServiceContainer:
     ) -> None:
         """设置插件.
 
-        注册 AudioPlugin、WakeWordPlugin、BridgePlugin。
+        注册 AudioPlugin、McpPlugin、WakeWordPlugin、BridgePlugin。
+        PluginManager 按优先级拓扑排序：Audio(10) → Mcp(20) → WakeWord(30) → Bridge(40)
         """
         from backend.plugins.audio import AudioPlugin
         from backend.plugins.bridge_plugin import BridgePlugin
+        from backend.plugins.mcp_plugin import McpPlugin
         from backend.plugins.wake_word import WakeWordPlugin
 
         # 创建插件实例
         audio_plugin = AudioPlugin()
+        mcp_plugin = McpPlugin()
         wake_word_plugin = WakeWordPlugin()
         bridge_plugin = BridgePlugin()
 
         # 注册插件（Manager 自动拓扑排序）
         self.plugins.register(
             audio_plugin,
+            mcp_plugin,
             wake_word_plugin,
             bridge_plugin,
         )
@@ -416,44 +428,11 @@ class AndroidServiceContainer:
                 elif state == "stop":
                     await self._handle_tts_stop()
 
-            elif msg_type == "mcp":
-                # MCP 消息 → 路由到 McpServer 处理
-                await self._handle_mcp_message(json_data)
-
-            # 通知所有插件
+            # 通知所有插件（McpPlugin 会处理 type="mcp" 的消息）
             await self.plugins.notify_incoming_json(json_data)
 
         except Exception as e:
             logger.error(f"处理 JSON 消息失败: {e}")
-
-    # -------------------------
-    # MCP 处理
-    # -------------------------
-
-    async def _handle_mcp_message(self, json_data: dict) -> None:
-        """处理 MCP 消息 — 路由到 McpServer.
-
-        Args:
-            json_data: 协议层收到的包含 type="mcp" 的 JSON 字典
-        """
-        try:
-            from backend.mcp.mcp_server import McpServer
-
-            mcp = McpServer.get_instance()
-            payload = json_data.get("payload")
-            if payload:
-                # 确保 MCP Server 的发送回调已绑定到协议层
-                if not mcp._send_callback:
-                    mcp.set_send_callback(self.protocol.send_mcp_message)
-                    # 加载通用 MCP 工具
-                    mcp.add_common_tools()
-
-                await mcp.parse_message(payload)
-            else:
-                logger.warning(f"MCP 消息缺少 payload: {json_data}")
-
-        except Exception as e:
-            logger.error(f"处理 MCP 消息失败: {e}", exc_info=True)
 
     # -------------------------
     # TTS 处理
@@ -586,13 +565,85 @@ class AndroidServiceContainer:
         await self.protocol.send_start_listening(mode)
         await self.state.set_device_state(DeviceState.LISTENING)
 
+    async def start_wake_word_monitoring(self) -> None:
+        """启动唤醒词持续监听模式.
+
+        前端持续发送音频给后端，唤醒词检测器实时检测。
+        检测到唤醒词后自动连接服务器并开始对话。
+        """
+        wake_word_plugin = self.plugins.get_plugin("wake_word")
+        if not wake_word_plugin or not wake_word_plugin.detector:
+            raise RuntimeError("唤醒词检测器未初始化，请先在设置中启用唤醒词功能")
+
+        if not wake_word_plugin.detector.enabled:
+            raise RuntimeError("唤醒词功能未启用")
+
+        if not wake_word_plugin.detector._running:
+            # 尝试启动检测器（可能之前因无本地麦克风而未启动）
+            if wake_word_plugin._audio_plugin and wake_word_plugin._audio_plugin.codec:
+                await wake_word_plugin.detector.start(wake_word_plugin._audio_plugin.codec)
+            else:
+                raise RuntimeError("音频编解码器不可用")
+
+        self._wake_word_monitoring = True
+        logger.info("唤醒词持续监听模式已启动")
+
+    def stop_wake_word_monitoring(self) -> None:
+        """停止唤醒词持续监听模式."""
+        self._wake_word_monitoring = False
+        logger.info("唤醒词持续监听模式已停止")
+
     async def on_frontend_audio(self, pcm_data: bytes) -> None:
-        """接收前端发来的麦克风 PCM 音频，编码为 Opus 后发送给远程服务器.
+        """接收前端发来的麦克风 PCM 音频.
+
+        两种工作模式:
+        1. 唤醒词监听模式: 将 PCM 直接传给唤醒词检测器
+        2. 正常对话模式: 编码为 Opus 后发送给远程服务器
+
+        两种模式可同时工作（唤醒词检测中开始对话后，音频同时
+        送往检测器和远程服务器）。
 
         Args:
             pcm_data: PCM float32 小端序, 16kHz, mono
         """
         try:
+            import numpy as np
+
+            # 解码 PCM（两种模式共用）
+            audio = np.frombuffer(pcm_data, dtype=np.float32)
+
+            # --- 唤醒词监听模式: 将音频传给检测器 ---
+            if self._wake_word_monitoring:
+                self._monitoring_audio_count += 1
+                wake_word_plugin = self.plugins.get_plugin("wake_word")
+                if not wake_word_plugin:
+                    if self._monitoring_audio_count <= 3:
+                        logger.warning("唤醒词监听: 未找到 wake_word 插件")
+                elif not wake_word_plugin.detector:
+                    if self._monitoring_audio_count <= 3:
+                        logger.warning("唤醒词监听: 检测器未初始化")
+                else:
+                    detector = wake_word_plugin.detector
+                    if not detector.enabled:
+                        if self._monitoring_audio_count <= 3:
+                            logger.warning("唤醒词监听: 检测器未启用")
+                    elif not detector._running:
+                        if self._monitoring_audio_count <= 3:
+                            logger.warning("唤醒词监听: 检测器未运行")
+                    elif detector._paused:
+                        if self._monitoring_audio_count <= 3:
+                            logger.warning("唤醒词监听: 检测器已暂停")
+                    else:
+                        detector.on_audio_data(audio)
+                        # 每 100 帧（约 2.5 秒）打印音频状态
+                        if self._monitoring_audio_count % 100 == 0:
+                            max_val = np.abs(audio).max()
+                            rms_val = np.sqrt(np.mean(audio ** 2))
+                            logger.info(f"唤醒词监听: 已处理 {self._monitoring_audio_count} 帧, "
+                                        f"振幅 max={max_val:.4f} rms={rms_val:.4f}, "
+                                        f"队列={detector._audio_queue.qsize() if detector._audio_queue else 0}")
+
+            # --- 正常对话模式: 编码并发送给远程服务器 ---
             if not self.protocol or not self.protocol.is_audio_channel_opened():
                 return
 
@@ -600,11 +651,7 @@ class AndroidServiceContainer:
             if not self.state.should_capture_audio():
                 return
 
-            import numpy as np
             from backend.audio_codecs.audio_codec import AudioConfig
-
-            # bytes → numpy float32
-            audio = np.frombuffer(pcm_data, dtype=np.float32)
 
             # 计算 Opus 帧大小（16kHz * 20ms = 320 采样点）
             frame_size = int(AudioConfig.INPUT_SAMPLE_RATE * AudioConfig.FRAME_DURATION / 1000)

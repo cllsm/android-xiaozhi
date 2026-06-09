@@ -37,8 +37,13 @@
 
     <!-- 底部控制栏 -->
     <view class="control-bar">
+      <!-- 唤醒词监听中状态 -->
+      <view v-if="isWakeWordMonitoring" class="btn-monitoring" @click="handleStopMonitoring">
+        <text class="btn-text">正在监听唤醒词... 🎤</text>
+      </view>
+
       <!-- 开始/停止对话按钮 -->
-      <view v-if="deviceState === 'IDLE'" class="btn-primary" @click="handleStart">
+      <view v-else-if="deviceState === 'IDLE'" class="btn-primary" @click="handleStart">
         <text class="btn-text">开始对话</text>
       </view>
 
@@ -52,6 +57,15 @@
 
       <view v-else class="btn-connecting">
         <text class="btn-text">连接中...</text>
+      </view>
+
+      <!-- 唤醒词监听按钮（仅 IDLE + 后端已连接时显示） -->
+      <view
+        v-if="deviceState === 'IDLE' && isBackendConnected && !isWakeWordMonitoring"
+        class="btn-wake-word"
+        @click="handleStartMonitoring"
+      >
+        <text class="btn-text">开始监听唤醒词</text>
       </view>
 
       <!-- 文本输入 -->
@@ -74,9 +88,12 @@
 
 <script setup lang="ts">
 import { useAppStore } from '@/store'
+import { useSettingsStore } from '@/store'
 
 const appStore = useAppStore()
-const { deviceState, currentText, currentEmotion, chatHistory, errorMessage } = storeToRefs(appStore)
+const settingsStore = useSettingsStore()
+const { deviceState, currentText, currentEmotion, chatHistory, errorMessage, isWakeWordMonitoring, isBackendConnected } = storeToRefs(appStore)
+const { wakeWordEnabled } = storeToRefs(settingsStore)
 
 const inputText = ref('')
 const scrollTop = ref(0)
@@ -95,6 +112,14 @@ function handleStop() {
 
 function handleAbort() {
   appStore.abortSpeaking()
+}
+
+function handleStartMonitoring() {
+  appStore.startWakeWordMonitoring()
+}
+
+function handleStopMonitoring() {
+  appStore.stopWakeWordMonitoring()
 }
 
 function handleSendText() {
@@ -171,7 +196,9 @@ function handleSendText() {
 .btn-primary,
 .btn-listening,
 .btn-speaking,
-.btn-connecting {
+.btn-connecting,
+.btn-monitoring,
+.btn-wake-word {
   display: flex;
   justify-content: center;
   align-items: center;
@@ -194,6 +221,27 @@ function handleSendText() {
 
 .btn-connecting {
   background-color: #616161;
+}
+
+.btn-monitoring {
+  background-color: #66bb6a;
+  animation: pulse-green 2s infinite;
+}
+
+.btn-wake-word {
+  background-color: #26a69a;
+}
+
+@keyframes pulse-green {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+  100% {
+    opacity: 1;
+  }
 }
 
 .btn-text {

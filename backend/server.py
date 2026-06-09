@@ -516,6 +516,15 @@ class LocalServer:
             ws: WebSocket 连接
             msg: aiohttp WebSocket 消息对象
         """
+        # 调试：记录前5条消息类型
+        import backend.server as _self_mod
+        if not hasattr(_self_mod, '_msg_type_count'):
+            _self_mod._msg_type_count = {}
+        mtype = str(msg.type)
+        _self_mod._msg_type_count[mtype] = _self_mod._msg_type_count.get(mtype, 0) + 1
+        if _self_mod._msg_type_count[mtype] <= 2:
+            logger.info(f"WS消息类型={mtype}, 累计={{k: v for k, v in _self_mod._msg_type_count.items()}}")
+
         if msg.type == WSMsgType.TEXT:
             try:
                 data = json.loads(msg.data)
@@ -548,6 +557,15 @@ class LocalServer:
         elif msg.type == WSMsgType.BINARY:
             # 前端发送的麦克风 PCM 音频，转发给协议层
             if self._container:
+                # 用模块级计数器（避免实例属性问题）
+                import backend.server as _self_mod
+                if not hasattr(_self_mod, '_global_binary_count'):
+                    _self_mod._global_binary_count = 0
+                _self_mod._global_binary_count += 1
+                if _self_mod._global_binary_count <= 3:
+                    logger.info(f"收到前端音频帧 #{_self_mod._global_binary_count}, 大小={len(msg.data)} bytes")
+                elif _self_mod._global_binary_count % 200 == 0:
+                    logger.info(f"已收到 {_self_mod._global_binary_count} 帧前端音频")
                 try:
                     await self._container.on_frontend_audio(msg.data)
                 except Exception as e:
@@ -692,6 +710,14 @@ class LocalServer:
 
         elif action == "activate":
             return await self._cmd_activate(params)
+
+        elif action == "start_wake_word_monitoring":
+            await container.start_wake_word_monitoring()
+            return {"monitoring": True}
+
+        elif action == "stop_wake_word_monitoring":
+            container.stop_wake_word_monitoring()
+            return {"monitoring": False}
 
         elif action == "set_wake_word":
             return await self._cmd_set_wake_word(params)
