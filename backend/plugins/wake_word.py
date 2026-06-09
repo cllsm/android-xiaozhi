@@ -98,8 +98,25 @@ class WakeWordPlugin(Plugin):
     async def _on_detected(self, wake_word, full_text):
         """
         唤醒词检测回调.
+
+        检测到唤醒词后:
+        1. 广播 wake_word_detected 事件给前端
+        2. 停止持续监听模式
+        3. 连接服务器并开始自动对话（或打断当前语音）
         """
         try:
+            # 广播唤醒词检测事件给前端
+            local_server = getattr(self._ctx, "local_server", None) if self._ctx else None
+            if local_server:
+                await local_server.broadcast_event("wake_word_detected", {
+                    "wake_word": wake_word,
+                    "full_text": full_text,
+                })
+
+            # 停止持续监听模式
+            if hasattr(self._cmd, "stop_wake_word_monitoring"):
+                self._cmd.stop_wake_word_monitoring()
+
             if self._ctx.is_speaking():
                 await self._cmd.abort_speaking(AbortReason.WAKE_WORD_DETECTED)
                 if self._audio_plugin and self._audio_plugin.codec:

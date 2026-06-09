@@ -112,33 +112,67 @@ class WakeWordDetector:
         logger.debug(f"KWS配置: 阈值={self._keywords_threshold}, 分数={self._keywords_score}")
 
     def _load_model(self) -> bool:
-        """Load sherpa-onnx KeywordSpotter model."""
+        """加载唤醒词检测模型.
+
+        优先使用 sherpa_onnx（桌面环境），不可用时回退到 onnxruntime（Termux/Android）。
+        """
+        # 检查模型文件
+        encoder_path = self._model_dir / "encoder.onnx"
+        decoder_path = self._model_dir / "decoder.onnx"
+        joiner_path = self._model_dir / "joiner.onnx"
+        tokens_path = self._model_dir / "tokens.txt"
+
+        lang = ConfigManager.get_instance().get_config("WAKE_WORD_OPTIONS.WAKE_WORD_LANG", "zh")
+        keywords_path = get_user_keywords_path(lang)
+
+        required_files = [encoder_path, decoder_path, joiner_path, tokens_path, keywords_path]
+        for file_path in required_files:
+            if not file_path.exists():
+                logger.error(f"模型文件不存在: {file_path}")
+                return False
+
+        # 方案 1: 尝试 sherpa_onnx（桌面环境，性能更好）
         try:
             import sherpa_onnx
 
-            encoder_path = self._model_dir / "encoder.onnx"
-            decoder_path = self._model_dir / "decoder.onnx"
-            joiner_path = self._model_dir / "joiner.onnx"
-            tokens_path = self._model_dir / "tokens.txt"
+            # Windows 路径安全处理
+            safe_tokens_path = self._ensure_ascii_path(tokens_path, lang)
 
-            lang = ConfigManager.get_instance().get_config("WAKE_WORD_OPTIONS.WAKE_WORD_LANG", "zh")
-            keywords_path = get_user_keywords_path(lang)
-
-            required_files = [encoder_path, decoder_path, joiner_path, tokens_path, keywords_path]
-            for file_path in required_files:
-                if not file_path.exists():
-                    logger.error(f"模型文件不存在: {file_path}")
-                    return False
-
-            # Windows: sherpa-onnx C++ 用 std::ifstream(narrow_char*) 读取 tokens.txt，
-            # 路径含非 ASCII 字符时 GBK 代码页会吞掉反斜杠导致打开失败。
-            # 将 tokens.txt 复制到 ASCII 安全路径的用户目录下。
-            tokens_path = self._ensure_ascii_path(tokens_path, lang)
-
-            logger.info(f"加载 KeywordSpotter 模型: {self._model_dir}")
+            logger.info(f"加载 sherpa_onnx KeywordSpotter 模型: {self._model_dir}")
 
             with self._onnx_lock:
                 self._keyword_spotter = sherpa_onnx.KeywordSpotter(
+                    tokens=str(safe_tokens_path),
+                    encoder=str(encoder_path),
+                    decoder=str(decoder_path),
+                    joiner=str(joiner_path),
+                    keywords_file=str(keywords_path),
+                    num_threads=self._num_threads,
+                    sample_rate=self._sample_rate,
+                    feature_dim=80,
+                    max_active_paths=self._max_active_paths,
+                    keywords_score=self._keywords_score,
+                    keywords_threshold=self._keywords_threshold,
+                    num_trailing_blanks=self._num_trailing_blanks,
+                    provider=self._provider,
+                )
+
+            logger.info("sherpa_onnx KeywordSpotter 模型加载成功")
+            return True
+
+        except ImportError:
+            logger.info("sherpa_onnx 不可用，尝试 onnxruntime 回退...")
+        except Exception as e:
+            logger.warning(f"sherpa_onnx 加载失败: {e}，尝试 onnxruntime 回退...")
+
+        # 方案 2: 回退到 onnxruntime（Termux/Android）
+        try:
+            from backend.audio_processing.onnx_wake_word import OnnxWakeWordDetector
+
+            logger.info(f"加载 onnxruntime 唤醒词模型: {self._model_dir}")
+
+            with self._onnx_lock:
+                self._keyword_spotter = OnnxWakeWordDetector(
                     tokens=str(tokens_path),
                     encoder=str(encoder_path),
                     decoder=str(decoder_path),
@@ -154,14 +188,11 @@ class WakeWordDetector:
                     provider=self._provider,
                 )
 
-            logger.info("KeywordSpotter 模型加载成功")
+            logger.info("onnxruntime 唤醒词检测器加载成功")
             return True
 
-        except ImportError as e:
-            logger.error(f"sherpa_onnx 导入失败: {e}", exc_info=True)
-            return False
         except Exception as e:
-            logger.error(f"加载模型失败: {e}", exc_info=True)
+            logger.error(f"onnxruntime 唤醒词检测器加载失败: {e}", exc_info=True)
             return False
 
     @staticmethod
