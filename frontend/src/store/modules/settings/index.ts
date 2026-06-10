@@ -39,6 +39,8 @@ export const useSettingsStore = defineStore('settings', () => {
   // ==================== 音频 ====================
   const aecEnabled = ref(true)
   const opusOutputSampleRate = ref(24000)
+  /** 播放模式：backend（后端 sounddevice 播放）| frontend（前端 Web Audio API 播放） */
+  const audioPlaybackMode = ref('backend')
 
   // ==================== 音乐 ====================
   const musicSearchUrl = ref('')
@@ -48,6 +50,51 @@ export const useSettingsStore = defineStore('settings', () => {
 
   // ==================== 后端服务 ====================
   const backendHost = ref('127.0.0.1')
+
+  // ==================== 应用行为 ====================
+  /** 聊天历史最大保留条数 */
+  const chatHistoryLimit = ref(200)
+  /** 首次连接自动重试次数 */
+  const connectRetryCount = ref(5)
+  /** 首次连接重试开关 */
+  const connectRetryEnabled = ref(true)
+
+  // ==================== 外观 ====================
+  /** 主题：dark（默认） | light */
+  const theme = ref('dark')
+
+  // ==================== 悬浮窗 ====================
+  /** 悬浮窗开关 */
+  const overlayEnabled = ref(false)
+
+  /** 应用主题到 DOM */
+  function setTheme(newTheme: string) {
+    theme.value = newTheme
+    applyTheme(newTheme)
+    // 持久化到本地
+    try {
+      uni.setStorageSync('xiaozhi_theme', newTheme)
+    }
+    catch (_) {}
+  }
+
+  /** 将主题应用到 page 元素 */
+  function applyTheme(t: string) {
+    // #ifdef H5
+    document.documentElement.setAttribute('data-theme', t)
+    // #endif
+    // #ifndef H5
+    // App 端通过 page 的 style 设置
+    try {
+      const pages = getCurrentPages()
+      if (pages.length > 0) {
+        const page = pages[pages.length - 1] as any
+        page.$page?.setStyle?.({}) // 触发重渲染
+      }
+    }
+    catch (_) {}
+    // #endif
+  }
 
   // ==================== 内部状态 ====================
   const loaded = ref(false)
@@ -90,6 +137,14 @@ export const useSettingsStore = defineStore('settings', () => {
         opusOutputSampleRate.value = config.AUDIO_DEVICES.opus_output_sample_rate ?? opusOutputSampleRate.value
       }
 
+      // 播放模式
+      if (config.APP_OPTIONS?.AUDIO_PLAYBACK_MODE) {
+        const mode = config.APP_OPTIONS.AUDIO_PLAYBACK_MODE
+        if (mode === 'frontend' || mode === 'backend') {
+          audioPlaybackMode.value = mode
+        }
+      }
+
       // 音乐
       if (config.MUSIC) {
         const m = config.MUSIC
@@ -104,6 +159,36 @@ export const useSettingsStore = defineStore('settings', () => {
         backendHost.value = config.APP_OPTIONS.BACKEND_HOST
       }
 
+      // 应用行为（优先从本地存储读取）
+      try {
+        const savedLimit = uni.getStorageSync('xiaozhi_chat_limit')
+        if (savedLimit) chatHistoryLimit.value = Number(savedLimit) || 200
+        const savedRetry = uni.getStorageSync('xiaozhi_connect_retry_enabled')
+        if (savedRetry !== '') connectRetryEnabled.value = savedRetry !== 'false'
+        const savedRetryCount = uni.getStorageSync('xiaozhi_connect_retry_count')
+        if (savedRetryCount) connectRetryCount.value = Number(savedRetryCount) || 5
+        // 悬浮窗开关
+        const savedOverlay = uni.getStorageSync('xiaozhi_overlay_enabled')
+        if (savedOverlay !== '') overlayEnabled.value = savedOverlay !== 'false'
+      }
+      catch (_) {}
+
+      // 主题（优先从本地存储读取，其次从后端配置）
+      try {
+        const savedTheme = uni.getStorageSync('xiaozhi_theme')
+        if (savedTheme === 'light' || savedTheme === 'dark') {
+          theme.value = savedTheme
+        }
+        else if (config.APP_OPTIONS?.THEME) {
+          const t = config.APP_OPTIONS.THEME
+          if (t === 'light' || t === 'dark') {
+            theme.value = t
+          }
+        }
+      }
+      catch (_) {}
+      applyTheme(theme.value)
+
       loaded.value = true
     }
     catch (e) {
@@ -111,25 +196,28 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
-  /** 保存设置到后端 */
+  /** 保存设置到后端（并行发送所有请求） */
   async function saveSettings() {
     try {
+      // 构建所有配置更新请求
+      const updates: Promise<any>[] = []
+
       // 网络
-      await backendService.httpPut('/api/config', {
+      updates.push(backendService.httpPut('/api/config', {
         key: 'SYSTEM_OPTIONS.NETWORK.PROTOCOL',
         value: protocol.value,
-      })
-      await backendService.httpPut('/api/config', {
+      }))
+      updates.push(backendService.httpPut('/api/config', {
         key: 'SYSTEM_OPTIONS.NETWORK.WEBSOCKET_URL',
         value: websocketUrl.value,
-      })
-      await backendService.httpPut('/api/config', {
+      }))
+      updates.push(backendService.httpPut('/api/config', {
         key: 'SYSTEM_OPTIONS.NETWORK.WEBSOCKET_ACCESS_TOKEN',
         value: websocketAccessToken.value,
-      })
+      }))
 
       // MQTT
-      await backendService.httpPut('/api/config', {
+      updates.push(backendService.httpPut('/api/config', {
         key: 'SYSTEM_OPTIONS.NETWORK.MQTT_INFO',
         value: {
           endpoint: mqttBroker.value,
@@ -138,57 +226,75 @@ export const useSettingsStore = defineStore('settings', () => {
           publish_topic: mqttPublishTopic.value,
           subscribe_topic: mqttSubscribeTopic.value,
         },
-      })
+      }))
 
       // 唤醒词（通过专用命令触发模型热重载）
-      await backendService.sendCommand('set_wake_word', {
+      updates.push(backendService.sendCommand('set_wake_word', {
         enabled: wakeWordEnabled.value,
         sensitivity: wakeWordSensitivity.value,
         wake_word: wakeWordText.value,
-      })
+      }))
       // 同步保存检测参数
-      await backendService.httpPut('/api/config', {
+      updates.push(backendService.httpPut('/api/config', {
         key: 'WAKE_WORD_OPTIONS.KEYWORDS_SCORE',
         value: keywordsScore.value,
-      })
-      await backendService.httpPut('/api/config', {
+      }))
+      updates.push(backendService.httpPut('/api/config', {
         key: 'WAKE_WORD_OPTIONS.KEYWORDS_THRESHOLD',
         value: keywordsThreshold.value,
-      })
+      }))
 
       // 音频
-      await backendService.httpPut('/api/config', {
+      updates.push(backendService.httpPut('/api/config', {
         key: 'AEC_OPTIONS.ENABLED',
         value: aecEnabled.value,
-      })
-      await backendService.httpPut('/api/config', {
+      }))
+      updates.push(backendService.httpPut('/api/config', {
         key: 'AUDIO_DEVICES.opus_output_sample_rate',
         value: opusOutputSampleRate.value,
-      })
+      }))
+
+      // 播放模式
+      updates.push(backendService.httpPut('/api/config', {
+        key: 'APP_OPTIONS.AUDIO_PLAYBACK_MODE',
+        value: audioPlaybackMode.value,
+      }))
 
       // 音乐
-      await backendService.httpPut('/api/config', {
+      updates.push(backendService.httpPut('/api/config', {
         key: 'MUSIC.SEARCH_URL',
         value: musicSearchUrl.value,
-      })
-      await backendService.httpPut('/api/config', {
+      }))
+      updates.push(backendService.httpPut('/api/config', {
         key: 'MUSIC.URL_API',
         value: musicUrlApi.value,
-      })
-      await backendService.httpPut('/api/config', {
+      }))
+      updates.push(backendService.httpPut('/api/config', {
         key: 'MUSIC.URL_API_KEY',
         value: musicUrlApiKey.value,
-      })
-      await backendService.httpPut('/api/config', {
+      }))
+      updates.push(backendService.httpPut('/api/config', {
         key: 'MUSIC.DEFAULT_QUALITY',
         value: musicDefaultQuality.value,
-      })
+      }))
 
       // 后端地址
-      await backendService.httpPut('/api/config', {
+      updates.push(backendService.httpPut('/api/config', {
         key: 'APP_OPTIONS.BACKEND_HOST',
         value: backendHost.value,
-      })
+      }))
+
+      // 应用行为（本地持久化，不需要同步到后端）
+      try {
+        uni.setStorageSync('xiaozhi_chat_limit', String(chatHistoryLimit.value))
+        uni.setStorageSync('xiaozhi_connect_retry_enabled', String(connectRetryEnabled.value))
+        uni.setStorageSync('xiaozhi_connect_retry_count', String(connectRetryCount.value))
+        uni.setStorageSync('xiaozhi_overlay_enabled', String(overlayEnabled.value))
+      }
+      catch (_) {}
+
+      // 并行发送所有请求
+      await Promise.all(updates)
     }
     catch (e: any) {
       console.error('[SettingsStore] 保存设置失败:', e)
@@ -216,6 +322,7 @@ export const useSettingsStore = defineStore('settings', () => {
     // 音频
     aecEnabled,
     opusOutputSampleRate,
+    audioPlaybackMode,
     // 音乐
     musicSearchUrl,
     musicUrlApi,
@@ -223,6 +330,15 @@ export const useSettingsStore = defineStore('settings', () => {
     musicDefaultQuality,
     // 后端
     backendHost,
+    // 外观
+    theme,
+    setTheme,
+    // 应用行为
+    chatHistoryLimit,
+    connectRetryCount,
+    connectRetryEnabled,
+    // 悬浮窗
+    overlayEnabled,
     loaded,
     loadSettings,
     saveSettings,

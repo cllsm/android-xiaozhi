@@ -169,6 +169,18 @@
 
       <view class="form-item row">
         <view>
+          <text class="form-label">前端播放</text>
+          <text class="form-hint">开启后音频由前端播放，适合无 sounddevice 的环境</text>
+        </view>
+        <switch
+          :checked="audioPlaybackMode === 'frontend'"
+          @change="audioPlaybackMode = $event.detail.value ? 'frontend' : 'backend'"
+          color="#4fc3f7"
+        />
+      </view>
+
+      <view class="form-item row">
+        <view>
           <text class="form-label">回声消除 (AEC)</text>
           <text class="form-hint">建议在扬声器外放时开启</text>
         </view>
@@ -275,6 +287,96 @@
       </view>
     </view>
 
+    <!-- ==================== 外观 ==================== -->
+    <view class="section">
+      <text class="section-title">外观</text>
+
+      <view class="form-item">
+        <text class="form-label">主题模式</text>
+        <view class="radio-group">
+          <view
+            class="radio-item"
+            :class="{ active: theme === 'dark' }"
+            @click="setTheme('dark')"
+          >
+            <text class="radio-text">🌙 深色</text>
+          </view>
+          <view
+            class="radio-item"
+            :class="{ active: theme === 'light' }"
+            @click="setTheme('light')"
+          >
+            <text class="radio-text">☀️ 浅色</text>
+          </view>
+        </view>
+      </view>
+    </view>
+
+    <!-- ==================== 应用行为 ==================== -->
+    <view class="section">
+      <text class="section-title">应用行为</text>
+
+      <view class="form-item">
+        <text class="form-label">聊天历史保留: {{ chatHistoryLimit }} 条</text>
+        <slider
+          :value="chatHistoryLimit"
+          :min="50"
+          :max="500"
+          :step="50"
+          activeColor="#4fc3f7"
+          @change="(e: any) => chatHistoryLimit = e.detail.value"
+        />
+        <text class="form-hint">超出后自动删除最早的记录</text>
+      </view>
+
+      <view class="form-item">
+        <view class="btn-danger" @click="handleClearChat">
+          <text class="btn-danger-text">清除聊天记录</text>
+        </view>
+      </view>
+
+      <view class="form-item row">
+        <view>
+          <text class="form-label">启动时自动重试连接</text>
+          <text class="form-hint">后端未就绪时指数退避重试</text>
+        </view>
+        <switch
+          :checked="connectRetryEnabled"
+          @change="connectRetryEnabled = !connectRetryEnabled"
+          color="#4fc3f7"
+        />
+      </view>
+
+      <view v-if="connectRetryEnabled" class="form-item">
+        <text class="form-label">重试次数: {{ connectRetryCount }} 次</text>
+        <slider
+          :value="connectRetryCount"
+          :min="1"
+          :max="10"
+          :step="1"
+          activeColor="#4fc3f7"
+          @change="(e: any) => connectRetryCount = e.detail.value"
+        />
+      </view>
+    </view>
+
+    <!-- ==================== 悬浮窗 ==================== -->
+    <view class="section">
+      <text class="section-title">悬浮窗</text>
+
+      <view class="form-item row">
+        <view>
+          <text class="form-label">启用悬浮窗</text>
+          <text class="form-hint">在桌面显示悬浮窗，快速回到对话</text>
+        </view>
+        <switch
+          :checked="overlayEnabled"
+          @change="handleOverlayToggle"
+          color="#4fc3f7"
+        />
+      </view>
+    </view>
+
     <!-- ==================== 关于 ==================== -->
     <view class="section">
       <text class="section-title">关于</text>
@@ -298,19 +400,54 @@
 
 <script setup lang="ts">
 import { useSettingsStore } from '@/store'
+import { useAppStore } from '@/store'
+import { callNative } from '@/utils/native-bridge'
 
 const settingsStore = useSettingsStore()
+const appStore = useAppStore()
 const {
   protocol, websocketUrl, websocketAccessToken,
   mqttBroker, mqttUsername, mqttPassword, mqttPublishTopic, mqttSubscribeTopic,
   wakeWordEnabled, wakeWordText, wakeWordSensitivity, keywordsScore, keywordsThreshold, wakeWordLang,
-  aecEnabled, opusOutputSampleRate,
+  aecEnabled, opusOutputSampleRate, audioPlaybackMode,
   musicSearchUrl, musicUrlApi, musicUrlApiKey, musicDefaultQuality,
-  backendHost,
+  backendHost, theme,
+  chatHistoryLimit, connectRetryCount, connectRetryEnabled,
+  overlayEnabled,
 } = storeToRefs(settingsStore)
+const { setTheme } = settingsStore
 
 const saveSuccess = ref(false)
 const saveMessage = ref('')
+
+/** 悬浮窗开关切换 */
+async function handleOverlayToggle(e: any) {
+  const show = e.detail.value
+  overlayEnabled.value = show
+  try {
+    await callNative('overlay_window', { show })
+  }
+  catch (err) {
+    console.warn('[Settings] 悬浮窗切换失败:', err)
+  }
+}
+
+/** 清除聊天记录 */
+function handleClearChat() {
+  uni.showModal({
+    title: '确认清除',
+    content: '清除后聊天记录将无法恢复，确定要清除吗？',
+    confirmColor: '#ef5350',
+    success: (res: any) => {
+      if (res.confirm) {
+        appStore.clearChatHistory()
+        saveMessage.value = '聊天记录已清除'
+        saveSuccess.value = true
+        setTimeout(() => { saveSuccess.value = false }, 2000)
+      }
+    },
+  })
+}
 
 onMounted(() => {
   if (!settingsStore.loaded) {
@@ -337,19 +474,21 @@ async function handleSave() {
 <style scoped lang="scss">
 .container {
   min-height: 100vh;
-  background-color: #16213e;
+  background-color: var(--theme-bg-color);
   padding: 16px;
-  padding-bottom: 32px;
+  padding-bottom: calc(32px + env(safe-area-inset-bottom));
+  box-sizing: border-box;
 }
 
 .section {
-  background-color: #1f2940;
+  background-color: var(--theme-bg-card);
   border-radius: 12px;
   padding: 16px;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 
 .section-title {
+  display: block;
   color: #4fc3f7;
   font-size: 16px;
   font-weight: 600;
@@ -358,6 +497,10 @@ async function handleSave() {
 
 .form-item {
   margin-bottom: 12px;
+}
+
+.form-item:last-child {
+  margin-bottom: 0;
 }
 
 .form-item.row {
@@ -400,31 +543,35 @@ async function handleSave() {
 }
 
 .form-label {
-  color: #9e9e9e;
+  display: block;
+  color: var(--theme-content-color);
   font-size: 14px;
   margin-bottom: 6px;
 }
 
 .form-value {
-  color: #e0e0e0;
+  color: var(--theme-main-color);
   font-size: 14px;
 }
 
 .form-input {
+  width: 100%;
   height: 40px;
   padding: 0 12px;
-  background-color: #263148;
+  background-color: var(--theme-border-color);
   border-radius: 8px;
-  color: #e0e0e0;
+  color: var(--theme-main-color);
   font-size: 14px;
+  box-sizing: border-box;
 }
 
 .input-placeholder {
-  color: #616161;
+  color: var(--theme-tips-color);
 }
 
 .form-hint {
-  color: #616161;
+  display: block;
+  color: var(--theme-tips-color);
   font-size: 12px;
   margin-top: 4px;
 }
@@ -444,7 +591,7 @@ async function handleSave() {
   justify-content: center;
   align-items: center;
   height: 36px;
-  background-color: #263148;
+  background-color: var(--theme-border-color);
   border-radius: 8px;
   border: 1px solid transparent;
 }
@@ -455,7 +602,7 @@ async function handleSave() {
 }
 
 .radio-text {
-  color: #e0e0e0;
+  color: var(--theme-main-color);
   font-size: 14px;
 }
 
@@ -475,6 +622,22 @@ async function handleSave() {
   font-weight: 600;
 }
 
+.btn-danger {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 44px;
+  border-radius: 22px;
+  border: 1px solid #ef5350;
+  background-color: transparent;
+}
+
+.btn-danger-text {
+  color: #ef5350;
+  font-size: 14px;
+  font-weight: 600;
+}
+
 .toast-success {
   position: fixed;
   top: 50%;
@@ -482,11 +645,8 @@ async function handleSave() {
   transform: translate(-50%, -50%);
   padding: 16px 32px;
   border-radius: 12px;
-  z-index: 999;
-}
-
-.toast-success {
   background-color: rgba(102, 187, 106, 0.9);
+  z-index: 999;
 }
 
 .toast-text {

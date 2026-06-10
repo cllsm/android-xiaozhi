@@ -4,10 +4,12 @@
 作为 Android 前端（WebView / 原生层）与 Python 后端之间的通信桥梁。
 """
 
+import asyncio
 import json
 import platform
 import sys
 import time
+import uuid
 from typing import Any, Optional
 
 from aiohttp import web, WSMsgType
@@ -54,6 +56,9 @@ class LocalServer:
         # WebSocket 客户端集合
         self._ws_clients: set[web.WebSocketResponse] = set()
 
+        # native_call 等待中的请求（request_id → Future）
+        self._pending_native_calls: dict[str, asyncio.Future] = {}
+
         # aiohttp 应用
         self._app: Optional[web.Application] = None
         self._runner: Optional[web.AppRunner] = None
@@ -76,6 +81,16 @@ class LocalServer:
         self._start_time = time.time()
         self._app = web.Application()
 
+        # 保存事件循环引用（供 camera 等模块跨线程提交协程）
+        self._loop = asyncio.get_running_loop()
+
+        # 注入 server 实例到 camera 模块（启用 native_call 拍照通道）
+        try:
+            from backend.mcp.tools.camera import camera_android
+            camera_android.set_server(self)
+        except Exception as e:
+            logger.debug(f"[Server] 注入 camera server 引用失败: {e}")
+
         # 注册路由
         self._app.router.add_get("/health", self._handle_health)
         self._app.router.add_get("/api/status", self._handle_status)
@@ -86,6 +101,7 @@ class LocalServer:
         self._app.router.add_get("/api/activation", self._handle_activation_get)
         self._app.router.add_post("/api/activation", self._handle_activation_post)
         self._app.router.add_get("/api/system", self._handle_system_info)
+        self._app.router.add_post("/api/analyze_photo", self._handle_analyze_photo)
         self._app.router.add_get("/ws", self._handle_ws)
         # Web 测试页面（仅调试用）
         self._app.router.add_get("/test", self._handle_test_page)
@@ -379,6 +395,53 @@ class LocalServer:
             "memory_usage_mb": _get_memory_mb(),
         }
         return web.json_response(data)
+
+    async def _handle_analyze_photo(self, request: web.Request) -> web.Response:
+        """分析照片接口（前端手动拍照后调用）.
+
+        POST /api/analyze_photo
+        Body: {"image_data": "base64...", "question": "描述这张照片"}
+        返回: {"success": true, "result": "分析结果"}
+        """
+        try:
+            body = await request.json()
+            image_b64 = body.get("image_data", "")
+            question = body.get("question", "描述这张照片的内容")
+
+            if not image_b64:
+                return web.json_response(
+                    {"success": False, "message": "缺少 image_data"}, status=400
+                )
+
+            import base64
+
+            try:
+                image_bytes = base64.b64decode(image_b64)
+            except Exception:
+                return web.json_response(
+                    {"success": False, "message": "image_data 不是有效的 base64"}, status=400
+                )
+
+            # 使用 camera 单例分析图片
+            from backend.mcp.tools.camera import get_camera_instance
+
+            camera = get_camera_instance()
+            # 直接注入图片数据，跳过 capture 步骤
+            camera._jpeg_data = {"buf": image_bytes, "len": len(image_bytes)}
+
+            result = await asyncio.to_thread(camera.analyze, question)
+
+            try:
+                parsed = json.loads(result)
+                return web.json_response(parsed)
+            except (json.JSONDecodeError, TypeError):
+                return web.json_response({"success": True, "result": result})
+
+        except Exception as e:
+            logger.error(f"[Server] analyze_photo 失败: {e}", exc_info=True)
+            return web.json_response(
+                {"success": False, "message": str(e)}, status=500
+            )
 
     # -------------------------
     # H5 前端静态文件服务
@@ -728,6 +791,10 @@ class LocalServer:
         elif action == "native_call":
             return await self._cmd_native_call(params)
 
+        elif action == "native_call_response":
+            # 前端返回原生调用结果，唤醒等待中的 Future
+            return await self._cmd_native_call_response(params)
+
         elif action == "shutdown":
             container.tasks.request_shutdown()
             return {"shutting_down": True}
@@ -834,26 +901,75 @@ class LocalServer:
             return {"tool_name": tool_name, "error": str(e)}
 
     async def _cmd_native_call(self, params: dict) -> dict:
-        """原生能力调用命令（透传到 UTS 插件）.
+        """原生能力调用命令（转发给前端执行）.
 
-        在 Web 测试环境中，仅返回方法信息。
-        在 Android 环境中，实际调用 UTS 原生插件。
+        后端通过 WebSocket 将请求广播给前端，前端使用 plus.android
+        执行原生调用后返回结果。支持超时机制。
 
         Args:
-            params: {"method": "volume.set", "args": {...}}
+            params: {"method": "screenshot", "args": {...}}
+
+        Returns:
+            {"success": bool, "result": any} 或 {"success": False, "message": str}
         """
+        import asyncio
+
         method = params.get("method", "")
         args = params.get("args", {})
 
-        logger.info(f"原生调用: method={method}, args={args}")
+        logger.info(f"[native_call] 请求原生调用: method={method}, args={args}")
 
-        # Web 测试环境中无法真正调用原生方法，返回模拟数据
-        return {
-            "method": method,
-            "result": "ok",
-            "simulated": True,
-            "message": "Web 测试环境：原生调用已模拟",
-        }
+        # 没有前端客户端连接时，直接返回模拟数据
+        if not self._ws_clients:
+            return {
+                "success": False,
+                "simulated": True,
+                "message": "无前端连接，原生调用不可用",
+            }
+
+        # 生成请求 ID，创建 Future 等待结果
+        request_id = f"native_{uuid.uuid4().hex[:8]}"
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._pending_native_calls[request_id] = future
+
+        try:
+            # 向前端广播原生调用请求
+            await self.broadcast_event("native_call_request", {
+                "request_id": request_id,
+                "method": method,
+                "args": args,
+            })
+
+            # 等待前端响应（超时 30 秒）
+            result = await asyncio.wait_for(future, timeout=30.0)
+            return {"success": True, "result": result}
+
+        except asyncio.TimeoutError:
+            logger.warning(f"[native_call] 超时: method={method}, request_id={request_id}")
+            return {"success": False, "message": f"原生调用超时: {method}"}
+        except Exception as e:
+            logger.error(f"[native_call] 失败: {e}")
+            return {"success": False, "message": str(e)}
+        finally:
+            self._pending_native_calls.pop(request_id, None)
+
+    async def _cmd_native_call_response(self, params: dict) -> dict:
+        """前端返回原生调用结果，唤醒等待中的 Future.
+
+        Args:
+            params: {"request_id": "native_xxx", "result": {...}}
+        """
+        request_id = params.get("request_id", "")
+        result = params.get("result")
+
+        future = self._pending_native_calls.get(request_id)
+        if future and not future.done():
+            future.set_result(result)
+            logger.info(f"[native_call] 收到前端响应: request_id={request_id}")
+        else:
+            logger.warning(f"[native_call] 无匹配的等待请求: request_id={request_id}")
+
+        return {"received": True}
 
     # -------------------------
     # 事件广播

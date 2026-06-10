@@ -4,7 +4,14 @@
 import { backendService } from '@/api/backend'
 import { AudioPlayer } from '@/utils/audio-player'
 import { audioRecorder } from '@/utils/audio-recorder'
+import { initNativeBridge } from '@/utils/native-bridge'
 import { useSettingsStore } from '@/store'
+import { useAudioStore } from '@/store'
+
+/** 聊天历史默认最大条数（会被 settings store 覆盖） */
+const DEFAULT_CHAT_HISTORY_LIMIT = 200
+/** 持久化存储 key */
+const CHAT_HISTORY_KEY = 'xiaozhi_chat_history'
 
 export const useAppStore = defineStore('app', () => {
   // ========== 状态 ==========
@@ -22,9 +29,84 @@ export const useAppStore = defineStore('app', () => {
   /** 开关：开启后对话结束自动恢复唤醒词监听 */
   const wakeWordAutoMonitor = ref(false)
 
+  // ========== 播放模式 ==========
+  const audioPlaybackMode = ref<string>('backend')
+
   // ========== 音频实例 ==========
   const audioPlayer = new AudioPlayer()
   // audioRecorder 来自全局单例，页面 renderjs 绑定在同一个实例上
+
+  // 将 AudioPlayer 的音量数据同步到 audioStore（供 AudioWave 消费）
+  audioPlayer.onVolume((volume: number) => {
+    try {
+      const audioStore = useAudioStore()
+      audioStore.setVolume(volume)
+      audioStore.setPlaying(volume > 0 || audioPlayer.isPlaying)
+    }
+    catch (_) {}
+  })
+
+  /** 获取当前聊天历史限制条数（从 settings 读取） */
+  function getChatLimit(): number {
+    try {
+      const settingsStore = useSettingsStore()
+      return settingsStore.chatHistoryLimit || DEFAULT_CHAT_HISTORY_LIMIT
+    }
+    catch (_) {
+      return DEFAULT_CHAT_HISTORY_LIMIT
+    }
+  }
+
+  // ========== 持久化：加载聊天历史 ==========
+  try {
+    const saved = uni.getStorageSync(CHAT_HISTORY_KEY)
+    if (saved) {
+      const parsed = JSON.parse(saved)
+      if (Array.isArray(parsed)) {
+        chatHistory.value = parsed.slice(-getChatLimit())
+      }
+    }
+  }
+  catch (_) {
+    // 存储读取失败，使用空历史
+  }
+
+  /** 持久化聊天历史到本地存储（防抖） */
+  let _saveTimer: ReturnType<typeof setTimeout> | null = null
+  function persistChatHistory() {
+    if (_saveTimer) clearTimeout(_saveTimer)
+    _saveTimer = setTimeout(() => {
+      try {
+        const data = chatHistory.value.slice(-getChatLimit())
+        uni.setStorageSync(CHAT_HISTORY_KEY, JSON.stringify(data))
+      }
+      catch (_) {
+        // 存储写入失败（空间不足等），静默忽略
+      }
+    }, 500)
+  }
+
+  /** 清除聊天历史 */
+  function clearChatHistory() {
+    chatHistory.value = []
+    try {
+      uni.removeStorageSync(CHAT_HISTORY_KEY)
+    }
+    catch (_) {}
+  }
+
+  // 监听 chatHistory 变化自动持久化（防抖 500ms）
+  watch(() => chatHistory.value.length, () => {
+    persistChatHistory()
+  })
+
+  /** 播放模式变更时同步 AudioPlayer */
+  function updatePlaybackMode(mode: string) {
+    audioPlaybackMode.value = mode
+    if (mode === 'frontend') {
+      audioPlayer.ensureContext()
+    }
+  }
 
   // ========== 连接 ==========
 
@@ -36,6 +118,10 @@ export const useAppStore = defineStore('app', () => {
         const settingsStore = useSettingsStore()
         if (settingsStore.backendHost) {
           backendService.setAppBackendHost(settingsStore.backendHost)
+        }
+        // 同步播放模式
+        if (settingsStore.audioPlaybackMode) {
+          updatePlaybackMode(settingsStore.audioPlaybackMode)
         }
       }
       catch {
@@ -53,6 +139,9 @@ export const useAppStore = defineStore('app', () => {
 
   /** 注册所有后端事件监听 */
   function _registerEventListeners() {
+    // ★ 注册原生桥接：监听后端下发的 native_call_request 事件
+    initNativeBridge()
+
     backendService.on('backend_connected', () => {
       isBackendConnected.value = true
       errorMessage.value = null
@@ -67,9 +156,11 @@ export const useAppStore = defineStore('app', () => {
       const newState = (data.state || '').toUpperCase()
       deviceState.value = newState
 
-      // IDLE 时停止音频播放
+      // IDLE 时停止音频播放并重置状态
       if (newState === 'IDLE') {
         audioPlayer.stop()
+        currentEmotion.value = 'neutral'
+        currentText.value = ''
 
         // ★ 自动恢复唤醒词监听：对话结束后如果开关开启，自动重新开始监听
         if (wakeWordAutoMonitor.value && !isWakeWordMonitoring.value && isBackendConnected.value) {
@@ -90,21 +181,19 @@ export const useAppStore = defineStore('app', () => {
       // STT 最终识别结果 → 显示为用户消息
       if (data.source === 'stt') {
         if (data.is_final) {
-          chatHistory.value.push({
-            text: data.text,
-            isUser: true,
-            timestamp: Date.now(),
-          })
+          const msg = { text: data.text, isUser: true, timestamp: Date.now() }
+          chatHistory.value = [...chatHistory.value, msg]
         }
         return
       }
       const isFinal = data.is_final !== false
       if (isFinal) {
-        chatHistory.value.push({
-          text: data.text,
-          isUser: false,
-          timestamp: Date.now(),
-        })
+        const msg = { text: data.text, isUser: false, timestamp: Date.now() }
+        chatHistory.value = [...chatHistory.value, msg]
+      }
+      // 限制聊天历史长度
+      if (chatHistory.value.length > getChatLimit()) {
+        chatHistory.value = chatHistory.value.slice(-getChatLimit())
       }
     })
 
@@ -123,10 +212,11 @@ export const useAppStore = defineStore('app', () => {
       _fetchStatus()
     })
 
-    // 后端播放模式：音频由后端 sounddevice 播放，前端不播放
-    // 保留监听用于调试
-    backendService.on('audio', (_pcmData: ArrayBuffer) => {
-      // no-op: 音频由后端统一播放
+    // ★ 前端播放模式：接收后端推送的 PCM 音频并播放
+    backendService.on('audio', (pcmData: ArrayBuffer) => {
+      if (audioPlaybackMode.value === 'frontend') {
+        audioPlayer.play(pcmData)
+      }
     })
   }
 
@@ -148,6 +238,11 @@ export const useAppStore = defineStore('app', () => {
   async function startListening(mode?: string) {
     try {
       errorMessage.value = null
+
+      // 前端播放模式：在用户点击时初始化 AudioContext（浏览器自动播放策略）
+      if (audioPlaybackMode.value === 'frontend') {
+        audioPlayer.ensureContext()
+      }
 
       // 先通知后端进入 LISTENING 状态，再启动麦克风
       // 避免音频在后端 LISTENING 之前发送导致丢帧
@@ -194,11 +289,17 @@ export const useAppStore = defineStore('app', () => {
   async function sendText(text: string) {
     if (!text.trim())
       return
-    chatHistory.value.push({
+    const msg = {
       text: text.trim(),
       isUser: true,
       timestamp: Date.now(),
-    })
+    }
+    // 重新赋值数组，确保 uni-app 响应式更新（push 可能不触发渲染）
+    chatHistory.value = [...chatHistory.value, msg]
+    // 限制聊天历史长度
+    if (chatHistory.value.length > getChatLimit()) {
+      chatHistory.value = chatHistory.value.slice(-getChatLimit())
+    }
     try {
       await backendService.sendCommand('send_text', { text: text.trim() })
     }
@@ -278,8 +379,11 @@ export const useAppStore = defineStore('app', () => {
     currentText,
     currentEmotion,
     chatHistory,
+    clearChatHistory,
     isWakeWordMonitoring,
     wakeWordAutoMonitor,
+    audioPlaybackMode,
+    updatePlaybackMode,
     connectBackend,
     startListening,
     stopListening,
