@@ -1,7 +1,12 @@
 <template>
   <view class="container">
-    <!-- 顶部状态栏 -->
-    <StatusBar />
+    <!-- 顶部状态栏 + 设置入口 -->
+    <view class="top-bar">
+      <StatusBar />
+      <view class="settings-btn" @click="goToSettings">
+        <text class="settings-icon">⚙</text>
+      </view>
+    </view>
 
     <!-- 对话区域 -->
     <scroll-view class="chat-area" scroll-y :scroll-top="scrollTop" :scroll-with-animation="true">
@@ -163,6 +168,9 @@ watch(() => chatHistory.value.length, () => {
 
 function handleStart() {
   appStore.startListening()
+}
+function goToSettings() {
+  uni.navigateTo({ url: '/pages/tab/settings/index' })
 }
 function handleStop() {
   appStore.stopListening()
@@ -360,6 +368,22 @@ export default {
   flex-direction: column;
   height: 100vh;
   background-color: #16213e;
+}
+
+.top-bar {
+  display: flex;
+  align-items: center;
+  padding-right: 16px;
+}
+
+.settings-btn {
+  padding: 8px;
+  margin-left: auto;
+}
+
+.settings-icon {
+  font-size: 24px;
+  color: #9e9e9e;
 }
 
 .chat-area {
