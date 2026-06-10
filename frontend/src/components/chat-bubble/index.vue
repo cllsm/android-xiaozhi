@@ -36,8 +36,8 @@ function formatTime(ts?: number): string {
 
 .bubble.ai {
   align-self: flex-start;
-  background-color: #1f2940;
-  border: 1px solid #263148;
+  background-color: var(--theme-bg-card);
+  border: 1px solid var(--theme-border-color);
   border-bottom-left-radius: 4px;
 }
 
@@ -51,7 +51,7 @@ function formatTime(ts?: number): string {
 }
 
 .bubble-text.ai-text {
-  color: #e0e0e0;
+  color: var(--theme-content-color);
 }
 
 .bubble-time {
@@ -66,6 +66,6 @@ function formatTime(ts?: number): string {
 }
 
 .bubble.ai .bubble-time {
-  color: #616161;
+  color: var(--theme-tips-color);
 }
 </style>

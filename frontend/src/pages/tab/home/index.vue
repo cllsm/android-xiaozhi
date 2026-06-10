@@ -1,10 +1,13 @@
 <template>
   <view class="container">
-    <!-- 顶部状态栏 + 设置入口 -->
+    <!-- 顶部状态栏 + 工具按钮 -->
     <view class="top-bar">
       <StatusBar />
-      <view class="settings-btn" @click="goToSettings">
-        <text class="settings-icon">⚙</text>
+      <view class="top-actions">
+        <ThemePicker />
+        <view class="settings-btn" @click="goToSettings">
+          <text class="settings-icon">⚙</text>
+        </view>
       </view>
     </view>
 
@@ -13,12 +16,25 @@
       <view class="chat-messages">
         <view v-if="chatHistory.length === 0" class="empty-hint">
           <text class="empty-text">点击下方按钮开始对话</text>
+          <view class="hint-tags">
+            <text class="hint-tag" @click="handleQuickSend('帮我看看屏幕上是什么')">👀 看看屏幕</text>
+            <text class="hint-tag" @click="handleQuickSend('帮我读一下屏幕上的文字')">📝 读屏幕文字</text>
+            <text class="hint-tag" @click="handleQuickSend('这个怎么操作')">🔧 怎么操作</text>
+            <text class="hint-tag" @click="handleQuickSend('聊天记录我该怎么回')">💬 怎么回复</text>
+            <text class="hint-tag" @click="handleQuickSend('帮我看看面前有什么')">📷 看看面前</text>
+            <text class="hint-tag" @click="handleQuickSend('帮我拍张照看看这是什么东西')">🔍 识别物体</text>
+            <text class="hint-tag" @click="handleQuickSend('帮我录一段视频')">📹 录段视频</text>
+            <text class="hint-tag" @click="handleQuickSend('帮我打开相机')">🎥 打开相机</text>
+            <text class="hint-tag" @click="handleQuickSend('播放一段音乐')">🎵 播放音乐</text>
+            <text class="hint-tag" @click="handleQuickSend('今天天气怎么样')">🌤 查天气</text>
+          </view>
         </view>
         <ChatBubble
           v-for="(msg, idx) in chatHistory"
           :key="idx"
           :text="msg.text"
           :is-user="msg.isUser"
+          :timestamp="msg.timestamp"
         />
       </view>
     </scroll-view>
@@ -32,7 +48,7 @@
     <EmotionFace :emotion="currentEmotion" />
 
     <!-- 音频波形 -->
-    <AudioWave :active="deviceState === 'LISTENING' || deviceState === 'SPEAKING'" />
+    <AudioWave :active="deviceState === 'LISTENING' || deviceState === 'SPEAKING'" :volume="audioVolume" />
 
     <!-- 错误提示 -->
     <view v-if="errorMessage" class="error-bar">
@@ -76,6 +92,9 @@
 
       <!-- 文本输入 -->
       <view class="input-row">
+        <view class="btn-camera" @click="handleTakePhoto">
+          <text class="camera-icon">📷</text>
+        </view>
         <input
           class="text-input"
           v-model="inputText"
@@ -127,12 +146,18 @@ export default {
 <script setup lang="ts">
 import { useAppStore } from '@/store'
 import { useSettingsStore } from '@/store'
+import { useAudioStore } from '@/store'
+import { AudioRecorder } from '@/utils/audio-recorder'
 import { audioRecorder } from '@/utils/audio-recorder'
+import { callNative } from '@/utils/native-bridge'
+import { backendService } from '@/api/backend'
 
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
+const audioStore = useAudioStore()
 const { deviceState, currentText, currentEmotion, chatHistory, errorMessage, isWakeWordMonitoring, isBackendConnected, wakeWordAutoMonitor } = storeToRefs(appStore)
 const { wakeWordEnabled, aecEnabled } = storeToRefs(settingsStore)
+const { volumeLevel: audioVolume } = storeToRefs(audioStore)
 
 const inputText = ref('')
 const scrollTop = ref(0)
@@ -163,7 +188,10 @@ watch(aecEnabled, (val) => {
 }, { immediate: true })
 
 watch(() => chatHistory.value.length, () => {
-  setTimeout(() => { scrollTop.value = scrollTop.value + 1000 }, 50)
+  nextTick(() => {
+    // 交替使用两个大数值，确保 uni-app scroll-view 检测到变化并滚动到底部
+    scrollTop.value = scrollTop.value === 99999 ? 99998 : 99999
+  })
 })
 
 function handleStart() {
@@ -199,6 +227,47 @@ function handleSendText() {
     return
   appStore.sendText(text)
   inputText.value = ''
+}
+
+/** 快捷发送（空状态引导标签点击） */
+function handleQuickSend(text: string) {
+  appStore.sendText(text)
+}
+
+/** 拍照并分析 */
+async function handleTakePhoto() {
+  try {
+    const result = await callNative('take_photo') as any
+    if (!result?.image_data) {
+      appStore.errorMessage = '拍照失败：未获取到图片'
+      return
+    }
+
+    // 发送到后端分析
+    const response = await backendService.httpPost('/api/analyze_photo', {
+      image_data: result.image_data,
+      question: '描述这张照片的内容',
+    })
+
+    if (response?.success !== false) {
+      const analysisText = response?.result
+        ? (typeof response.result === 'string' ? response.result : JSON.stringify(response.result))
+        : '分析完成'
+      // 将分析结果显示为 AI 消息（chatHistory 已在 setup 顶层解构）
+      chatHistory.value = [...chatHistory.value, {
+        text: '📷 ' + analysisText,
+        isUser: false,
+        timestamp: Date.now(),
+      }]
+    }
+    else {
+      appStore.errorMessage = response?.message || '分析失败'
+    }
+  }
+  catch (e: any) {
+    console.warn('[Home] 拍照分析失败:', e)
+    appStore.errorMessage = `拍照失败: ${e.message || '未知错误'}`
+  }
 }
 </script>
 
@@ -296,8 +365,9 @@ export default {
             // ★ 用十六进制编码代替 Base64，彻底避免 btoa/atob 跨引擎兼容问题
             var float32 = buf instanceof Float32Array ? buf : new Float32Array(buf)
 
-            // 降采样: 每3个样本取1个 (48000/3=16000)
-            var step = 3
+            // 动态降采样：基于 onProcess 传入的实际采样率
+            var targetRate = 16000
+            var step = Math.max(1, Math.round(sampleRate / targetRate))
             var outLen = Math.floor(float32.length / step)
             var int16 = new Int16Array(outLen)
             for (var i = 0; i < outLen; i++) {
@@ -367,23 +437,29 @@ export default {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background-color: #16213e;
+  background-color: var(--theme-bg-color);
 }
 
 .top-bar {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   padding-right: 16px;
+}
+
+.top-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .settings-btn {
   padding: 8px;
-  margin-left: auto;
 }
 
 .settings-icon {
   font-size: 24px;
-  color: #9e9e9e;
+  color: var(--theme-content-color);
 }
 
 .chat-area {
@@ -392,25 +468,49 @@ export default {
   overflow: hidden;
 }
 
+.chat-messages {
+  display: flex;
+  flex-direction: column;
+}
+
 .empty-hint {
   display: flex;
+  flex-direction: column;
   justify-content: center;
   align-items: center;
-  height: 200px;
+  padding-top: 80px;
 }
 
 .empty-text {
-  color: #616161;
+  color: var(--theme-tips-color);
   font-size: 16px;
+  margin-bottom: 24px;
+}
+
+.hint-tags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  padding: 0 16px;
+}
+
+.hint-tag {
+  padding: 8px 14px;
+  background-color: var(--theme-bg-card);
+  border-radius: 20px;
+  color: var(--theme-content-color);
+  font-size: 13px;
+  border: 1px solid var(--theme-border-color);
 }
 
 .current-text {
   padding: 8px 16px;
-  background-color: #1f2940;
+  background-color: var(--theme-bg-card);
 }
 
 .current-text-content {
-  color: #e0e0e0;
+  color: var(--theme-main-color);
   font-size: 14px;
 }
 
@@ -423,12 +523,12 @@ export default {
 
 .error-text {
   flex: 1;
-  color: #ef5350;
+  color: var(--theme-error);
   font-size: 13px;
 }
 
 .error-close {
-  color: #ef5350;
+  color: var(--theme-error);
   padding: 4px 8px;
   font-size: 16px;
 }
@@ -436,8 +536,8 @@ export default {
 .control-bar {
   padding: 12px 16px;
   padding-bottom: 24px;
-  background-color: #1a1a2e;
-  border-top: 1px solid #263148;
+  background-color: var(--theme-bg-color-secondary);
+  border-top: 1px solid var(--theme-border-color);
 }
 
 .btn-primary,
@@ -455,28 +555,28 @@ export default {
 }
 
 .btn-primary {
-  background-color: #4fc3f7;
+  background-color: var(--theme-primary);
 }
 
 .btn-listening {
-  background-color: #66bb6a;
+  background-color: var(--theme-success);
 }
 
 .btn-speaking {
-  background-color: #ff6f00;
+  background-color: var(--theme-warning);
 }
 
 .btn-connecting {
-  background-color: #616161;
+  background-color: var(--theme-tips-color);
 }
 
 .btn-monitoring {
-  background-color: #66bb6a;
+  background-color: var(--theme-success);
   animation: pulse-green 2s infinite;
 }
 
 .btn-wake-word {
-  background-color: #26a69a;
+  background-color: var(--theme-success);
 }
 
 .wake-word-toggle {
@@ -486,12 +586,12 @@ export default {
   padding: 0 8px;
   margin-bottom: 12px;
   height: 40px;
-  background-color: #1f2940;
+  background-color: var(--theme-bg-card);
   border-radius: 20px;
 }
 
 .toggle-label {
-  color: #b0bec5;
+  color: var(--theme-content-color);
   font-size: 14px;
   padding-left: 8px;
 }
@@ -524,14 +624,30 @@ export default {
   flex: 1;
   height: 40px;
   padding: 0 12px;
-  background-color: #263148;
+  background-color: var(--theme-border-color);
   border-radius: 20px;
-  color: #e0e0e0;
+  color: var(--theme-main-color);
   font-size: 14px;
 }
 
 .input-placeholder {
-  color: #616161;
+  color: var(--theme-tips-color);
+}
+
+.btn-camera {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 40px;
+  height: 40px;
+  background-color: var(--theme-bg-card);
+  border-radius: 20px;
+  border: 1px solid var(--theme-border-color);
+  flex-shrink: 0;
+}
+
+.camera-icon {
+  font-size: 20px;
 }
 
 .btn-send {
@@ -540,7 +656,7 @@ export default {
   align-items: center;
   width: 60px;
   height: 40px;
-  background-color: #4fc3f7;
+  background-color: var(--theme-primary);
   border-radius: 20px;
 }
 
