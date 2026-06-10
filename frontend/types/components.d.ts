@@ -12,27 +12,21 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
-    AgreePrivacy: typeof import('./../src/components/agree-privacy/index.vue')['default']
     AudioWave: typeof import('./../src/components/audio-wave/index.vue')['default']
     ChatBubble: typeof import('./../src/components/chat-bubble/index.vue')['default']
     EmotionFace: typeof import('./../src/components/emotion-face/index.vue')['default']
-    LangSelect: typeof import('./../src/components/lang-select/index.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     StatusBar: typeof import('./../src/components/status-bar/index.vue')['default']
-    ThemePicker: typeof import('./../src/components/theme-picker/index.vue')['default']
   }
 }
 
 // For TSX support
 declare global {
-  const AgreePrivacy: typeof import('./../src/components/agree-privacy/index.vue')['default']
   const AudioWave: typeof import('./../src/components/audio-wave/index.vue')['default']
   const ChatBubble: typeof import('./../src/components/chat-bubble/index.vue')['default']
   const EmotionFace: typeof import('./../src/components/emotion-face/index.vue')['default']
-  const LangSelect: typeof import('./../src/components/lang-select/index.vue')['default']
   const RouterLink: typeof import('vue-router')['RouterLink']
   const RouterView: typeof import('vue-router')['RouterView']
   const StatusBar: typeof import('./../src/components/status-bar/index.vue')['default']
-  const ThemePicker: typeof import('./../src/components/theme-picker/index.vue')['default']
 }

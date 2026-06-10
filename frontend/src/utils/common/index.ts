@@ -16,7 +16,11 @@ export const stateLabels: Record<string, string> = {
   SPEAKING: '回复中',
 }
 
-/** 情绪表情映射 */
+/**
+ * 情绪表情映射（单一数据源，EmotionFace 组件引用此表）
+ * key: 后端返回的 emotion 字段值
+ * value: 对应的 Unicode emoji（空字符串表示不显示）
+ */
 export const emotionEmojis: Record<string, string> = {
   neutral: '',
   happy: '😊',
@@ -31,9 +35,4 @@ export const emotionEmojis: Record<string, string> = {
 /** 获取状态标签 */
 export function getStateLabel(state: string): string {
   return stateLabels[state] || state
-}
-
-/** 获取情绪表情 */
-export function getEmotionEmoji(emotion: string): string {
-  return emotionEmojis[emotion] || '😊'
 }
