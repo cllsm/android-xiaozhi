@@ -89,6 +89,8 @@
     <view
       :prop="renderjsProp"
       :change:prop="recorderRenderjs.onPropChange"
+      :aecCfg="aecProp"
+      :change:aecCfg="recorderRenderjs.onAecChange"
       class="renderjs-bridge"
     ></view>
     <!-- #endif -->
@@ -125,13 +127,16 @@ import { audioRecorder } from '@/utils/audio-recorder'
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
 const { deviceState, currentText, currentEmotion, chatHistory, errorMessage, isWakeWordMonitoring, isBackendConnected, wakeWordAutoMonitor } = storeToRefs(appStore)
-const { wakeWordEnabled } = storeToRefs(settingsStore)
+const { wakeWordEnabled, aecEnabled } = storeToRefs(settingsStore)
 
 const inputText = ref('')
 const scrollTop = ref(0)
 
 // renderjs 录音桥接 — 通过改变 prop 触发 renderjs 开始/停止录音
 const renderjsProp = ref({ action: 'none', timestamp: 0 })
+
+// AEC 配置传递给 renderjs
+const aecProp = computed(() => ({ enabled: aecEnabled.value }))
 
 // 绑定 renderjs 控制方法到 audioRecorder（让 audioRecorder 可以触发 renderjs）
 onMounted(() => {
@@ -146,6 +151,11 @@ onMounted(() => {
   })
   // #endif
 })
+
+// 同步 AEC 配置到 AudioRecorder 静态属性
+watch(aecEnabled, (val) => {
+  AudioRecorder.aecEnabled = val
+}, { immediate: true })
 
 watch(() => chatHistory.value.length, () => {
   setTimeout(() => { scrollTop.value = scrollTop.value + 1000 }, 50)
@@ -197,6 +207,7 @@ import Recorder from 'recorder-core'
 
 let rec = null
 let stream = null
+let aecEnabled = true  // AEC 配置，由逻辑层传入
 
 export default {
   data() {
@@ -206,6 +217,13 @@ export default {
     console.log('[renderjs] 录音模块已挂载, Recorder=' + typeof Recorder)
   },
   methods: {
+    /** AEC 配置变化回调 */
+    onAecChange(newVal) {
+      if (newVal && typeof newVal.enabled === 'boolean') {
+        aecEnabled = newVal.enabled
+        console.log('[renderjs] AEC 配置更新:', aecEnabled)
+      }
+    },
     /**
      * prop 变化回调 — 逻辑层通过改变 renderjsProp 触发
      * @param newVal { action: 'start' | 'stop' | 'none', timestamp: number }
@@ -237,8 +255,8 @@ export default {
           audio: {
             sampleRate: 16000,
             channelCount: 1,
-            echoCancellation: true,
-            noiseSuppression: true,
+            echoCancellation: aecEnabled,
+            noiseSuppression: aecEnabled,
           },
         })
         console.log('[renderjs] getUserMedia 成功, tracks=' + stream.getAudioTracks().length)

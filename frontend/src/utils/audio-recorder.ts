@@ -31,6 +31,9 @@ export class AudioRecorder {
     format: 'pcm',
   }
 
+  /** AEC 和降噪开关（由外部 Settings Store 控制） */
+  public static aecEnabled: boolean = true
+
   private static readonly SILENT_THRESHOLD = 10      // 连续静音帧数触发音源切换
   private static readonly FALLBACK_THRESHOLD = 20    // 连续静音帧数触发方案回退
   private static readonly DEBUG_FRAME_COUNT = 5      // 前 N 帧输出详细日志
@@ -341,13 +344,13 @@ export class AudioRecorder {
   private async startWebAudio(): Promise<void> {
     this.log('启动 WebAudio 方案...')
 
-    // 获取音频流
+    // 获取音频流（AEC/降噪由外部配置控制）
     this.webAudio.stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         sampleRate: AudioRecorder.CONFIG.sampleRate,
         channelCount: AudioRecorder.CONFIG.channels,
-        echoCancellation: true,
-        noiseSuppression: true,
+        echoCancellation: AudioRecorder.aecEnabled,
+        noiseSuppression: AudioRecorder.aecEnabled,
       },
     })
     this.log(`✓ 获取音频流成功 (tracks: ${this.webAudio.stream.getAudioTracks().length})`)
