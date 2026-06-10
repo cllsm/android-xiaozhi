@@ -1,11 +1,13 @@
 /**
  * 音频状态管理
+ *
+ * 管理前端播放器的实时状态，供 UI 组件（如 AudioWave）消费。
+ * 播放/录音状态由 app store 在音频事件回调中同步更新。
  */
 export const useAudioStore = defineStore('audio', () => {
   const isRecording = ref(false)
   const isPlaying = ref(false)
   const volumeLevel = ref(0)
-  const waveData = ref<number[]>([])
 
   function setRecording(value: boolean) {
     isRecording.value = value
@@ -23,7 +25,6 @@ export const useAudioStore = defineStore('audio', () => {
     isRecording,
     isPlaying,
     volumeLevel,
-    waveData,
     setRecording,
     setPlaying,
     setVolume,

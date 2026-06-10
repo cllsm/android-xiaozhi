@@ -286,6 +286,32 @@ class AudioCodec:
         except Exception as e:
             logger.warning(f"音频写入失败: {e}")
 
+    def decode_to_pcm(self, opus_data: bytes) -> Optional[np.ndarray]:
+        """解码 Opus 数据为 float32 PCM 数组（不播放，仅解码）.
+
+        供前端播放模式使用：AudioPlugin 调用此方法获取解码后的 PCM，
+        然后通过 WebSocket 推送给前端。
+
+        Args:
+            opus_data: Opus 编码数据
+
+        Returns:
+            float32 numpy 数组（单声道，OUTPUT_SAMPLE_RATE），解码失败返回 None
+        """
+        try:
+            toc_info = parse_opus_toc(opus_data)
+            if toc_info is None:
+                return None
+
+            frame_size = int(
+                AudioConfig.OUTPUT_SAMPLE_RATE * toc_info["duration_ms"] / 1000
+            )
+            return self.opus_codec.decode(opus_data, frame_size)
+
+        except Exception as e:
+            logger.debug(f"Opus 解码失败: {e}")
+            return None
+
     async def write_pcm_direct(self, pcm_float32: np.ndarray):
         """直接写入 float32 PCM（供 MusicPlayer 使用）
 

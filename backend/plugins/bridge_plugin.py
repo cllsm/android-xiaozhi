@@ -19,9 +19,9 @@ class BridgePlugin(Plugin):
     - 通过 LocalServer 广播给前端
 
     INCOMING_JSON 解析规则:
+    - emotion 字段（任意消息类型）→ "emotion" 事件
     - type: "tts" + state: "start" → 提取 text 字段 → "text_response" 事件
     - type: "stt" → 提取识别文本 → "text_response" 事件
-    - type: "llm" + emotion 字段 → "emotion" 事件
     - 其他 JSON → "json_message" 事件
     """
 
@@ -99,9 +99,9 @@ class BridgePlugin(Plugin):
         """收到 JSON 消息 → 解析并广播对应事件.
 
         解析规则:
-        - type: "tts" + state: "start" → 检查 text 字段 → text_response
+        - emotion 字段（任意消息类型）→ 情绪推送
+        - type: "tts" → TTS 文本 → text_response
         - type: "stt" → 语音识别结果 → text_response
-        - type: "llm" + emotion → 情绪推送
         - 其他 → json_message 转发
 
         Args:
@@ -111,6 +111,13 @@ class BridgePlugin(Plugin):
             return
 
         msg_type = json_data.get("type")
+
+        # ★ 统一提取 emotion 字段 — 任何消息类型都可能携带情绪信息
+        emotion = json_data.get("emotion")
+        if emotion:
+            await self._local_server.broadcast_event("emotion", {
+                "emotion": emotion,
+            })
 
         if msg_type == "tts":
             state = json_data.get("state")
@@ -131,14 +138,6 @@ class BridgePlugin(Plugin):
                 await self._local_server.broadcast_event("text_response", {
                     "source": "stt",
                     "text": text,
-                })
-
-        elif msg_type == "llm":
-            # LLM 响应，检查情绪
-            emotion = json_data.get("emotion")
-            if emotion:
-                await self._local_server.broadcast_event("emotion", {
-                    "emotion": emotion,
                 })
 
         # 所有 JSON 消息都作为 json_message 转发

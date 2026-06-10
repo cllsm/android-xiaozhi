@@ -1,16 +1,21 @@
 """音频插件.
 
 负责音频采集、编码、播放和发送。
-参考 py-xiaozhi 架构：所有音频播放统一由后端通过 sounddevice 完成。
+支持两种播放模式：
+- backend（默认）: 后端 sounddevice 本地播放
+- frontend: 通过 WebSocket 将 PCM 推送给前端播放
 """
 
 import asyncio
 import os
 from typing import TYPE_CHECKING, Optional
 
+import numpy as np
+
 from backend.audio_codecs.audio_codec import AudioCodec
 from backend.log import get_logger
 from backend.plugins.base import Plugin
+from backend.utils.config_manager import ConfigManager
 
 if TYPE_CHECKING:
     from backend.bootstrap.protocols import PluginCommands, PluginContext
@@ -29,6 +34,7 @@ class AudioPlugin(Plugin):
         self.codec: Optional[AudioCodec] = None
         self._send_sem = asyncio.Semaphore(MAX_CONCURRENT_AUDIO_SENDS)
         self._in_silence_period = False
+        self._playback_mode: str = "backend"  # 缓存播放模式，避免频繁读配置
 
     async def setup(self, ctx: "PluginContext", cmd: "PluginCommands") -> None:
         await super().setup(ctx, cmd)
@@ -90,17 +96,59 @@ class AudioPlugin(Plugin):
             logger.error(f"处理 TTS 事件失败: {e}", exc_info=True)
 
     async def on_incoming_audio(self, data: bytes) -> None:
-        """接收音频数据并通过 sounddevice 本地播放.
+        """接收音频数据并根据播放模式分流.
 
-        音频播放完全由后端负责（参考 py-xiaozhi 架构）：
-        - 桌面端: sounddevice → 电脑扬声器
-        - Termux: sounddevice + portaudio → 手机扬声器
+        - backend 模式: sounddevice 本地播放（默认）
+        - frontend 模式: 通过 WebSocket 推送 PCM 给前端播放
         """
-        if self.codec:
-            try:
+        if not self.codec:
+            return
+
+        try:
+            mode = self._get_playback_mode()
+
+            if mode == "frontend":
+                # 前端播放：解码 Opus → float32 PCM → Int16 → WebSocket 推送
+                pcm_float32 = self.codec.decode_to_pcm(data)
+                if pcm_float32 is not None:
+                    await self._broadcast_to_frontend(pcm_float32)
+            else:
+                # 后端播放：sounddevice 本地播放（默认）
                 await self.codec.write_audio(data)
-            except Exception as e:
-                logger.debug(f"本地播放失败: {e}")
+
+        except Exception as e:
+            logger.debug(f"音频处理失败: {e}")
+
+    def _get_playback_mode(self) -> str:
+        """获取当前播放模式（从配置读取，带缓存）.
+
+        Returns:
+            'backend' 或 'frontend'
+        """
+        try:
+            config_mgr = ConfigManager.get_instance()
+            mode = config_mgr.get_config("APP_OPTIONS.AUDIO_PLAYBACK_MODE", "backend")
+            if mode in ("frontend", "backend"):
+                return mode
+        except Exception:
+            pass
+        return "backend"
+
+    async def _broadcast_to_frontend(self, pcm_float32: np.ndarray) -> None:
+        """将 PCM float32 数据转换为 Int16 并通过 WebSocket 广播给前端.
+
+        Args:
+            pcm_float32: numpy float32 PCM 数据（单声道，24kHz）
+        """
+        local_server = getattr(self._ctx, "local_server", None)
+        if not local_server:
+            return
+
+        # float32 [-1, 1] → Int16 [-32768, 32767]
+        pcm_int16 = (np.clip(pcm_float32, -1.0, 1.0) * 32767).astype(np.int16)
+        pcm_bytes = pcm_int16.tobytes()
+
+        await local_server.broadcast_audio(pcm_bytes)
 
     async def _pause_music_for_tts(self):
         """TTS 开始时暂停音乐."""
