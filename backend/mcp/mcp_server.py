@@ -259,6 +259,19 @@ class McpServer:
                     camera.set_explain_token(token)
                 logger.info(f"Vision service configured with URL: {url}")
 
+                # 同步配置到 screenshot 单例
+                try:
+                    from backend.mcp.tools.screenshot import AndroidScreenshot
+                    from backend.mcp.tools.screenshot._tools import _get_screenshot
+
+                    screenshot = _get_screenshot()
+                    screenshot.set_explain_url(url)
+                    if token:
+                        screenshot.set_explain_token(token)
+                    logger.info("[MCP] Vision 配置已同步到 screenshot")
+                except Exception as e:
+                    logger.debug(f"[MCP] 同步 screenshot 配置失败: {e}")
+
     async def _reply_result(self, request_id: int, result: Any):
         """
         发送成功响应.

@@ -1,10 +1,12 @@
 """Android 摄像头控制器.
 
 支持两种运行模式：
-- Android 设备：通过 UTS 原生插件调用 Camera2 API，或通过 native bridge 调用
+- Android 设备：通过 WebSocket native_call 通道 → 前端调用 Android 原生 Camera2 API
 - 桌面调试：使用 OpenCV（如果可用）或返回模拟数据
 """
 
+import asyncio
+import base64
 import io
 import json
 import subprocess
@@ -14,6 +16,16 @@ from backend.log import get_logger
 from backend.utils.resource_finder import get_platform_info
 
 logger = get_logger()
+
+# 模块级引用：server 实例，用于发起 native_call
+_server_ref: Any = None
+
+
+def set_server(server: Any) -> None:
+    """注入 LocalServer 实例，用于通过 native_call 通道向前端请求拍照."""
+    global _server_ref
+    _server_ref = server
+    logger.info("[Camera] 已注入 server 实例，可通过 native_call 通道拍照")
 
 
 class AndroidCamera:
@@ -155,24 +167,68 @@ class AndroidCamera:
     # ----- Android 原生实现 -----
 
     def _capture_android(self) -> bool:
-        """通过 Android Camera2 API 拍照.
+        """通过 native_call 通道请求前端拍照.
 
-        通过 native bridge 调用原生 Camera2 API 进行拍照。
+        流程：通过 server._cmd_native_call → WebSocket → 前端 native-bridge →
+        Android Camera2 API 拍照 → base64 回传 → 解码存储。
+
+        注意：此方法在 asyncio.to_thread 中调用，
+        需要通过 asyncio.run_coroutine_threadsafe 跨线程提交协程。
 
         Returns:
             是否成功
         """
+        if not _server_ref:
+            logger.warning("[Camera] server 未注入，尝试 subprocess 兜底")
+            return self._capture_android_subprocess()
+
+        try:
+            # 在线程池中需要跨线程提交协程到事件循环
+            loop = _server_ref._loop if hasattr(_server_ref, '_loop') else None
+            if not loop or loop.is_closed():
+                logger.warning("[Camera] 事件循环不可用，尝试 subprocess 兜底")
+                return self._capture_android_subprocess()
+
+            future = asyncio.run_coroutine_threadsafe(
+                _server_ref._cmd_native_call({
+                    "method": "take_photo",
+                    "args": {"quality": 85, "format": "jpeg"},
+                }),
+                loop,
+            )
+            # 等待结果（最多 30 秒，与 server 端超时一致）
+            result = future.result(timeout=30)
+
+            if not result.get("success"):
+                logger.warning(f"[Camera] native_call 拍照失败: {result.get('message')}")
+                return self._capture_android_subprocess()
+
+            # 提取前端返回的图片数据
+            native_result = result.get("result", {})
+            image_b64 = native_result.get("image_data", "")
+
+            if not image_b64:
+                logger.warning("[Camera] 前端未返回图片数据，尝试 subprocess 兜底")
+                return self._capture_android_subprocess()
+
+            image_bytes = base64.b64decode(image_b64)
+            self._jpeg_data = {"buf": image_bytes, "len": len(image_bytes)}
+            logger.info(f"[Camera] 通过 native_call 拍照成功, 大小: {len(image_bytes)} bytes")
+            return True
+
+        except Exception as e:
+            logger.error(f"[Camera] native_call 拍照失败: {e}，尝试 subprocess 兜底")
+            return self._capture_android_subprocess()
+
+    def _capture_android_subprocess(self) -> bool:
+        """subprocess 兜底方案（Termux 命令行环境）."""
         payload = {
             "module": "camera",
             "action": "take_photo",
-            "params": {
-                "quality": 85,
-                "format": "jpeg",
-            },
+            "params": {"quality": 85, "format": "jpeg"},
         }
 
         try:
-            # 调用 native bridge
             result = subprocess.run(
                 ["native-bridge", "--json", json.dumps(payload)],
                 capture_output=True,
@@ -183,24 +239,20 @@ class AndroidCamera:
             if result.returncode == 0 and result.stdout.strip():
                 response = json.loads(result.stdout.strip())
                 if response.get("success"):
-                    # 假设返回 base64 编码的图片数据
-                    import base64
-
                     image_b64 = response.get("image_data", "")
                     if image_b64:
                         image_bytes = base64.b64decode(image_b64)
                         self._jpeg_data = {"buf": image_bytes, "len": len(image_bytes)}
-                        logger.info(f"[Camera] Android 拍照成功, 大小: {len(image_bytes)} bytes")
+                        logger.info(f"[Camera] subprocess 拍照成功, 大小: {len(image_bytes)} bytes")
                         return True
 
-            logger.warning("[Camera] native bridge 拍照失败，尝试替代方案")
             return self._capture_android_alternative()
 
         except FileNotFoundError:
-            logger.warning("[Camera] native-bridge 命令不存在，尝试替代方案")
+            logger.warning("[Camera] native-bridge 命令不存在")
             return self._capture_android_alternative()
         except Exception as e:
-            logger.error(f"[Camera] Android 拍照失败: {e}")
+            logger.error(f"[Camera] subprocess 拍照失败: {e}")
             return self._capture_android_alternative()
 
     def _capture_android_alternative(self) -> bool:

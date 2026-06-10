@@ -322,6 +322,38 @@ class BackendService {
     // #endif
   }
 
+  /** HTTP POST 请求 */
+  async httpPost(path: string, body: any): Promise<any> {
+    // #ifdef H5
+    const response = await fetch(`${this.httpBase}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (!response.ok)
+      throw new Error(`HTTP ${response.status}`)
+    return response.json()
+    // #endif
+    // #ifndef H5
+    return new Promise((resolve, reject) => {
+      uni.request({
+        url: `${this.httpBase}${path}`,
+        method: 'POST',
+        data: body,
+        success: (res: any) => {
+          if (res.statusCode === 200) {
+            resolve(res.data)
+          }
+          else {
+            reject(new Error(`HTTP ${res.statusCode}`))
+          }
+        },
+        fail: (err: any) => reject(err),
+      })
+    })
+    // #endif
+  }
+
   /** 断开连接 */
   disconnect(): void {
     this._stopHeartbeat()
