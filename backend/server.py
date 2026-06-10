@@ -765,20 +765,38 @@ class LocalServer:
             return {"activated": False, "error": str(e)}
 
     async def _cmd_set_wake_word(self, params: dict) -> dict:
-        """唤醒词开关命令.
+        """唤醒词设置命令.
 
         Args:
-            params: {"enabled": true, "sensitivity": 0.2}
+            params: {"enabled": true, "sensitivity": 0.2, "wake_word": "你好小智"}
         """
         enabled = params.get("enabled", True)
         sensitivity = params.get("sensitivity", 0.2)
+        wake_word_text = params.get("wake_word", None)
 
         # 更新配置
         self._config.update_config("WAKE_WORD_OPTIONS.USE_WAKE_WORD", enabled)
         self._config.update_config("WAKE_WORD_OPTIONS.KEYWORDS_THRESHOLD", sensitivity)
 
+        result = {"enabled": enabled, "sensitivity": sensitivity}
+
+        # 如果提供了新的唤醒词文本，更新配置并热重载模型
+        if wake_word_text:
+            self._config.update_config("WAKE_WORD_OPTIONS.WAKE_WORD", wake_word_text)
+            result["wake_word"] = wake_word_text
+
+            # 触发唤醒词插件热重载（会重新生成 keywords 文件并重载模型）
+            wake_word_plugin = self._container.plugins.get_plugin("wake_word")
+            if wake_word_plugin and wake_word_plugin.detector:
+                try:
+                    await wake_word_plugin.reload_model()
+                    logger.info(f"唤醒词已更新并重载: {wake_word_text}")
+                except Exception as e:
+                    logger.error(f"唤醒词热重载失败: {e}")
+                    result["error"] = str(e)
+
         logger.info(f"唤醒词设置已更新: enabled={enabled}, sensitivity={sensitivity}")
-        return {"enabled": enabled, "sensitivity": sensitivity}
+        return result
 
     async def _cmd_call_mcp_tool(self, params: dict) -> dict:
         """MCP 工具调用命令.

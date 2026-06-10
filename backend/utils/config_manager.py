@@ -40,9 +40,9 @@ class ConfigManager:
             "MODEL_PATH": "models/zh",
             "NUM_THREADS": 5,
             "PROVIDER": "cpu",
-            "MAX_ACTIVE_PATHS": 2,
+            "MAX_ACTIVE_PATHS": 4,
             "KEYWORDS_SCORE": 1.8,
-            "KEYWORDS_THRESHOLD": 0.2,
+            "KEYWORDS_THRESHOLD": 0.25,
             "NUM_TRAILING_BLANKS": 1,
             "WAKE_WORD": "你好小智",
             "WAKE_WORD_LANG": "zh"

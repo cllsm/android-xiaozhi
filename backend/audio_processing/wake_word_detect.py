@@ -44,9 +44,9 @@ class WakeWordDetector:
         self._sample_rate = AudioConfig.INPUT_SAMPLE_RATE
         self._num_threads = 4
         self._provider = "cpu"
-        self._max_active_paths = 2
-        self._keywords_score = 1.0     # 降低关键词得分（更容易匹配）
-        self._keywords_threshold = 0.1  # 降低检测阈值（更灵敏）
+        self._max_active_paths = 4     # beam search 活跃路径数（与 sherpa-onnx 默认值一致）
+        self._keywords_score = 1.8     # 关键词 boosting 分数（越大越容易匹配）
+        self._keywords_threshold = 0.25  # 检测阈值（log-softmax 归一化后的概率）
         self._num_trailing_blanks = 1
 
     async def initialize(self, model_path: Optional[str] = None) -> bool:
@@ -111,18 +111,56 @@ class WakeWordDetector:
 
         logger.debug(f"KWS配置: 阈值={self._keywords_threshold}, 分数={self._keywords_score}")
 
+    def _ensure_keywords_file(self, lang: str) -> bool:
+        """确保关键词文件存在且与配置一致.
+
+        从配置的 WAKE_WORD 文本生成关键词文件，而不是依赖预置的 keywords.txt。
+        这样可以保证用户自定义的唤醒词始终生效。
+
+        Args:
+            lang: 语言代码
+
+        Returns:
+            是否成功
+        """
+        config = ConfigManager.get_instance()
+        wake_word_text = config.get_config("WAKE_WORD_OPTIONS.WAKE_WORD", "你好小智")
+
+        try:
+            from backend.audio_processing.keyword_converters import convert_wake_word
+            keyword_line, detected_lang, _ = convert_wake_word(wake_word_text)
+
+            # 使用检测到的语言或配置的语言
+            effective_lang = detected_lang if detected_lang else lang
+
+            keywords_path = get_user_keywords_path(effective_lang)
+            keywords_path.parent.mkdir(parents=True, exist_ok=True)
+            keywords_path.write_text(keyword_line + "\n", encoding="utf-8")
+
+            logger.info(f"关键词文件已生成: {keywords_path} (唤醒词: {wake_word_text}, 内容: {keyword_line})")
+            return True
+
+        except Exception as e:
+            logger.warning(f"生成关键词文件失败: {e}，将使用默认文件")
+            return False
+
     def _load_model(self) -> bool:
         """加载唤醒词检测模型.
 
         优先使用 sherpa_onnx（桌面环境），不可用时回退到 onnxruntime（Termux/Android）。
         """
+        config = ConfigManager.get_instance()
+        lang = config.get_config("WAKE_WORD_OPTIONS.WAKE_WORD_LANG", "zh")
+
+        # 从配置生成关键词文件（确保与 WAKE_WORD 设置一致）
+        self._ensure_keywords_file(lang)
+
         # 检查模型文件
         encoder_path = self._model_dir / "encoder.onnx"
         decoder_path = self._model_dir / "decoder.onnx"
         joiner_path = self._model_dir / "joiner.onnx"
         tokens_path = self._model_dir / "tokens.txt"
 
-        lang = ConfigManager.get_instance().get_config("WAKE_WORD_OPTIONS.WAKE_WORD_LANG", "zh")
         keywords_path = get_user_keywords_path(lang)
 
         required_files = [encoder_path, decoder_path, joiner_path, tokens_path, keywords_path]
