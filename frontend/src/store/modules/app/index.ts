@@ -20,9 +20,24 @@ export const useAppStore = defineStore('app', () => {
   const isConnected = ref(false)
   const isBackendConnected = ref(false)
   const errorMessage = ref<string | null>(null)
+  let _errorTimer: ReturnType<typeof setTimeout> | null = null
+  /** 设置错误消息（5秒自动消失） */
+  function showError(msg: string) {
+    errorMessage.value = msg
+    if (_errorTimer) clearTimeout(_errorTimer)
+    _errorTimer = setTimeout(() => {
+      errorMessage.value = null
+    }, 5000)
+  }
   const currentText = ref<string>('')
   const currentEmotion = ref<string>('neutral')
   const chatHistory = ref<Array<{ text: string; isUser: boolean; timestamp: number }>>([])
+
+  // ========== 加载状态 ==========
+  /** 是否正在连接服务器 */
+  const isConnecting = ref(false)
+  /** 是否正在启动对话 */
+  const isStarting = ref(false)
 
   // ========== 唤醒词持续监听 ==========
   const isWakeWordMonitoring = ref(false)
@@ -133,7 +148,7 @@ export const useAppStore = defineStore('app', () => {
     }
     catch (e) {
       console.error('[AppStore] 连接后端失败:', e)
-      errorMessage.value = '无法连接到后端服务'
+      showError('无法连接到后端服务')
     }
   }
 
@@ -178,14 +193,26 @@ export const useAppStore = defineStore('app', () => {
       if (!data.text)
         return
       currentText.value = data.text
-      // STT 最终识别结果 → 显示为用户消息
+      console.log('[AppStore] text_response:', JSON.stringify(data))
+
+      // STT 语音识别结果 → 添加为用户消息
       if (data.source === 'stt') {
-        if (data.is_final) {
-          const msg = { text: data.text, isUser: true, timestamp: Date.now() }
-          chatHistory.value = [...chatHistory.value, msg]
+        // 小智协议 STT 不区分中间/最终，收到即添加
+        // 避免重复：如果最后一条用户消息文字相同则跳过
+        const last = chatHistory.value[chatHistory.value.length - 1]
+        if (last && last.isUser && last.text === data.text) {
+          return
+        }
+        const msg = { text: data.text, isUser: true, timestamp: Date.now() }
+        chatHistory.value = [...chatHistory.value, msg]
+        // 限制聊天历史长度
+        if (chatHistory.value.length > getChatLimit()) {
+          chatHistory.value = chatHistory.value.slice(-getChatLimit())
         }
         return
       }
+
+      // TTS / LLM 回复 → 添加为 AI 消息
       const isFinal = data.is_final !== false
       if (isFinal) {
         const msg = { text: data.text, isUser: false, timestamp: Date.now() }
@@ -202,7 +229,7 @@ export const useAppStore = defineStore('app', () => {
     })
 
     backendService.on('error', (data: any) => {
-      errorMessage.value = data.message
+      showError(data.message || '未知错误')
     })
 
     // 唤醒词检测事件: 后端检测到唤醒词后自动开始对话
@@ -236,16 +263,30 @@ export const useAppStore = defineStore('app', () => {
   // ========== 操作 ==========
 
   async function startListening(mode?: string) {
+    if (isStarting.value) return
+    isStarting.value = true
+    errorMessage.value = null
     try {
-      errorMessage.value = null
-
       // 前端播放模式：在用户点击时初始化 AudioContext（浏览器自动播放策略）
       if (audioPlaybackMode.value === 'frontend') {
         audioPlayer.ensureContext()
       }
 
+      // 未连接服务器时自动连接（超时 15 秒）
+      if (!isConnected.value) {
+        isConnecting.value = true
+        try {
+          await backendService.sendCommand('connect')
+          isConnecting.value = false
+        }
+        catch (connErr: any) {
+          isConnecting.value = false
+          showError('连接服务器失败，请检查网络后重试')
+          return
+        }
+      }
+
       // 先通知后端进入 LISTENING 状态，再启动麦克风
-      // 避免音频在后端 LISTENING 之前发送导致丢帧
       await backendService.sendCommand('start_listening', { mode: mode || listeningMode.value })
 
       // 启动麦克风录音
@@ -257,11 +298,14 @@ export const useAppStore = defineStore('app', () => {
       }
       catch (e: any) {
         console.warn('[AppStore] 麦克风录音启动失败:', e)
-        errorMessage.value = `录音失败: ${e.message || '请检查权限'}`
+        showError(`录音失败: ${e.message || '请检查权限'}`)
       }
     }
     catch (e: any) {
-      errorMessage.value = e.message || '启动监听失败'
+      showError(e.message || '启动监听失败')
+    }
+    finally {
+      isStarting.value = false
     }
   }
 
@@ -271,7 +315,7 @@ export const useAppStore = defineStore('app', () => {
       await backendService.sendCommand('stop_listening')
     }
     catch (e: any) {
-      errorMessage.value = e.message || '停止监听失败'
+      showError(e.message || '停止监听失败')
     }
   }
 
@@ -282,7 +326,7 @@ export const useAppStore = defineStore('app', () => {
       await backendService.sendCommand('abort_speaking')
     }
     catch (e: any) {
-      errorMessage.value = e.message || '中止失败'
+      showError(e.message || '中止失败')
     }
   }
 
@@ -301,19 +345,32 @@ export const useAppStore = defineStore('app', () => {
       chatHistory.value = chatHistory.value.slice(-getChatLimit())
     }
     try {
+      // 未连接服务器时自动连接
+      if (!isConnected.value) {
+        isConnecting.value = true
+        try {
+          await backendService.sendCommand('connect')
+        }
+        catch (connErr: any) {
+          isConnecting.value = false
+          showError('连接服务器失败，请检查网络后重试')
+          return
+        }
+        isConnecting.value = false
+      }
       await backendService.sendCommand('send_text', { text: text.trim() })
     }
     catch (e: any) {
-      errorMessage.value = e.message || '发送失败'
+      showError(e.message || '发送失败')
     }
   }
 
   async function connectServer() {
     try {
-      await backendService.sendCommand('connect_server')
+      await backendService.sendCommand('connect')
     }
     catch (e: any) {
-      errorMessage.value = e.message || '连接服务器失败'
+      showError(e.message || '连接服务器失败')
     }
   }
 
@@ -322,7 +379,7 @@ export const useAppStore = defineStore('app', () => {
       await backendService.sendCommand('disconnect_server')
     }
     catch (e: any) {
-      errorMessage.value = e.message || '断开失败'
+      showError(e.message || '断开失败')
     }
   }
 
@@ -342,7 +399,7 @@ export const useAppStore = defineStore('app', () => {
       }
       catch (e: any) {
         console.warn('[AppStore] 唤醒词监听录音启动失败:', e)
-        errorMessage.value = `麦克风启动失败: ${e.message || '请检查权限'}`
+        showError(`麦克风启动失败: ${e.message || '请检查权限'}`)
         await backendService.sendCommand('stop_wake_word_monitoring')
         return
       }
@@ -350,7 +407,7 @@ export const useAppStore = defineStore('app', () => {
       wakeWordAutoMonitor.value = true
     }
     catch (e: any) {
-      errorMessage.value = e.message || '启动唤醒词监听失败'
+      showError(e.message || '启动唤醒词监听失败')
     }
   }
 
@@ -363,7 +420,7 @@ export const useAppStore = defineStore('app', () => {
       await backendService.sendCommand('stop_wake_word_monitoring')
     }
     catch (e: any) {
-      errorMessage.value = e.message || '停止监听失败'
+      showError(e.message || '停止监听失败')
     }
     finally {
       isWakeWordMonitoring.value = false
@@ -380,6 +437,8 @@ export const useAppStore = defineStore('app', () => {
     currentEmotion,
     chatHistory,
     clearChatHistory,
+    isConnecting,
+    isStarting,
     isWakeWordMonitoring,
     wakeWordAutoMonitor,
     audioPlaybackMode,

@@ -12,8 +12,14 @@
     </view>
 
     <!-- 对话区域 -->
-    <scroll-view class="chat-area" scroll-y :scroll-top="scrollTop" :scroll-with-animation="true">
-      <view class="chat-messages">
+    <scroll-view
+      class="chat-area"
+      scroll-y
+      :scroll-top="scrollTop"
+      :scroll-with-animation="true"
+      @scroll="onChatScroll"
+    >
+      <view id="chat-bottom" class="chat-messages">
         <view v-if="chatHistory.length === 0" class="empty-hint">
           <text class="empty-text">点击下方按钮开始对话</text>
           <view class="hint-tags">
@@ -50,7 +56,7 @@
     <!-- 音频波形 -->
     <AudioWave :active="deviceState === 'LISTENING' || deviceState === 'SPEAKING'" :volume="audioVolume" />
 
-    <!-- 错误提示 -->
+    <!-- 错误提示（3秒自动消失） -->
     <view v-if="errorMessage" class="error-bar">
       <text class="error-text">{{ errorMessage }}</text>
       <text class="error-close" @click="errorMessage = null">✕</text>
@@ -61,6 +67,11 @@
       <!-- 唤醒词监听中状态 -->
       <view v-if="isWakeWordMonitoring" class="btn-monitoring" @click="handleStopMonitoring">
         <text class="btn-text">正在监听唤醒词... 🎤 点击停止</text>
+      </view>
+
+      <!-- 正在启动/连接中 -->
+      <view v-else-if="isStarting || isConnecting" class="btn-connecting">
+        <text class="btn-text">{{ isConnecting ? '正在连接服务器...' : '正在启动...' }}</text>
       </view>
 
       <!-- 开始/停止对话按钮 -->
@@ -118,6 +129,8 @@
       class="renderjs-bridge"
     ></view>
     <!-- #endif -->
+    <!-- 悬浮球 -->
+    <FloatingBall />
   </view>
 </template>
 
@@ -138,6 +151,8 @@ export default {
     /** renderjs 错误回调 */
     onRenderjsError(data: { msg: string }) {
       console.error('[Home] renderjs 录音错误:', data.msg)
+      // renderjs getUserMedia 失败，立即触发降级
+      audioRecorder.handleRenderjsError(data.msg)
     },
   },
 }
@@ -147,6 +162,7 @@ export default {
 import { useAppStore } from '@/store'
 import { useSettingsStore } from '@/store'
 import { useAudioStore } from '@/store'
+import FloatingBall from '@/components/floating-ball/index.vue'
 import { AudioRecorder } from '@/utils/audio-recorder'
 import { audioRecorder } from '@/utils/audio-recorder'
 import { callNative } from '@/utils/native-bridge'
@@ -155,12 +171,24 @@ import { backendService } from '@/api/backend'
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
 const audioStore = useAudioStore()
-const { deviceState, currentText, currentEmotion, chatHistory, errorMessage, isWakeWordMonitoring, isBackendConnected, wakeWordAutoMonitor } = storeToRefs(appStore)
+const { deviceState, currentText, currentEmotion, chatHistory, errorMessage, isWakeWordMonitoring, isBackendConnected, wakeWordAutoMonitor, isConnecting, isStarting } = storeToRefs(appStore)
 const { wakeWordEnabled, aecEnabled } = storeToRefs(settingsStore)
 const { volumeLevel: audioVolume } = storeToRefs(audioStore)
 
 const inputText = ref('')
 const scrollTop = ref(0)
+let _scrollCounter = 0
+
+/** 滚动到底部（递增数值确保每次都触发） */
+function scrollToBottom() {
+  nextTick(() => {
+    _scrollCounter++
+    scrollTop.value = _scrollCounter * 100
+  })
+}
+
+/** scroll-view 滚动事件（未使用，预留） */
+function onChatScroll(_e: any) {}
 
 // renderjs 录音桥接 — 通过改变 prop 触发 renderjs 开始/停止录音
 const renderjsProp = ref({ action: 'none', timestamp: 0 })
@@ -188,10 +216,12 @@ watch(aecEnabled, (val) => {
 }, { immediate: true })
 
 watch(() => chatHistory.value.length, () => {
-  nextTick(() => {
-    // 交替使用两个大数值，确保 uni-app scroll-view 检测到变化并滚动到底部
-    scrollTop.value = scrollTop.value === 99999 ? 99998 : 99999
-  })
+  scrollToBottom()
+})
+
+// 监听 currentText 变化也滚动到底部（实时识别中）
+watch(currentText, () => {
+  scrollToBottom()
 })
 
 function handleStart() {
@@ -436,7 +466,9 @@ export default {
 .container {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
   background-color: var(--theme-bg-color);
 }
 
@@ -444,7 +476,8 @@ export default {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding-right: 16px;
+  padding: 0 16px;
+  flex-shrink: 0;
 }
 
 .top-actions {
@@ -466,6 +499,7 @@ export default {
   flex: 1;
   padding: 16px;
   overflow: hidden;
+  width: 100%;
 }
 
 .chat-messages {
@@ -535,9 +569,11 @@ export default {
 
 .control-bar {
   padding: 12px 16px;
-  padding-bottom: 24px;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom, 12px));
   background-color: var(--theme-bg-color-secondary);
   border-top: 1px solid var(--theme-border-color);
+  width: 100%;
+  flex-shrink: 0;
 }
 
 .btn-primary,
@@ -568,6 +604,7 @@ export default {
 
 .btn-connecting {
   background-color: var(--theme-tips-color);
+  animation: pulse-green 2s infinite;
 }
 
 .btn-monitoring {

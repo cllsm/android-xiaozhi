@@ -367,7 +367,7 @@
       <view class="form-item row">
         <view>
           <text class="form-label">启用悬浮窗</text>
-          <text class="form-hint">在桌面显示悬浮窗，快速回到对话</text>
+          <text class="form-hint">应用内悬浮快捷球，最小化后显示系统悬浮球</text>
         </view>
         <switch
           :checked="overlayEnabled"
@@ -401,7 +401,6 @@
 <script setup lang="ts">
 import { useSettingsStore } from '@/store'
 import { useAppStore } from '@/store'
-import { callNative } from '@/utils/native-bridge'
 
 const settingsStore = useSettingsStore()
 const appStore = useAppStore()
@@ -421,15 +420,8 @@ const saveSuccess = ref(false)
 const saveMessage = ref('')
 
 /** 悬浮窗开关切换 */
-async function handleOverlayToggle(e: any) {
-  const show = e.detail.value
-  overlayEnabled.value = show
-  try {
-    await callNative('overlay_window', { show })
-  }
-  catch (err) {
-    console.warn('[Settings] 悬浮窗切换失败:', err)
-  }
+function handleOverlayToggle(e: any) {
+  overlayEnabled.value = e.detail.value
 }
 
 /** 清除聊天记录 */

@@ -19,6 +19,8 @@ page {
 }
 
 /* ===== 浅色主题 ===== */
+/* H5 端通过 data-theme 属性切换 */
+:root[data-theme="light"],
 page[data-theme="light"] {
   --theme-primary: #0288d1;
   --theme-primary-dark: #01579b;
@@ -36,3 +38,6 @@ page[data-theme="light"] {
   --theme-bg-input: #f0f0f0;
   --theme-border-color: #e0e0e0;
 }
+
+/* ===== App 端浅色主题（通过内联 style 覆盖 CSS 变量） ===== */
+/* 当 App 端 data-theme 选择器不生效时，通过 JS 设置内联 style 覆盖 */

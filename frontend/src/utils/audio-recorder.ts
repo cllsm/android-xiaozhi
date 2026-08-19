@@ -45,6 +45,13 @@ export class AudioRecorder {
   onPcmFrameHex(hex: string): void {
     if (!this._recording || !this.onData) return
 
+    // 首帧数据到达，取消降级定时器
+    if (this._renderjsFallbackTimer && this._renderjsFrameCount === 0) {
+      clearTimeout(this._renderjsFallbackTimer)
+      this._renderjsFallbackTimer = null
+      this.log('✓ renderjs 录音确认成功（首帧数据到达）')
+    }
+
     try {
       const numSamples = hex.length / 4
       const float32 = new Float32Array(numSamples)
@@ -254,14 +261,69 @@ export class AudioRecorder {
     this.log('✓ renderjs 控制接口已绑定')
   }
 
+  /** renderjs 立即错误回调（由页面 renderjs error 事件触发） */
+  handleRenderjsError(msg: string): void {
+    if (this._renderjsFallbackTimer) {
+      clearTimeout(this._renderjsFallbackTimer)
+      this._renderjsFallbackTimer = null
+    }
+    if (!this._recording || this._method !== 'webaudio') return
+
+    this.warn(`renderjs 立即失败: ${msg}，自动降级`)
+    this._recording = false
+    this._method = 'none'
+    this._renderjsControl?.stopRecording()
+    this._fallbackFromRenderjs()
+  }
+
+  /** renderjs 启动失败时，自动降级到其他方案 */
+  private _renderjsFallbackTimer: ReturnType<typeof setTimeout> | null = null
+
   private startRenderjs(): void {
     if (!this._renderjsControl) {
       throw new Error('renderjs 控制接口未绑定')
     }
     this._recording = true
     this._method = 'webaudio' // renderjs 内部就是 WebAudio
+    this._renderjsFrameCount = 0
     this._renderjsControl.startRecording()
-    this.log('✓ renderjs 录音已请求启动...')
+    this.log('✓ renderjs 录音已请求启动，等待确认...')
+
+    // 3 秒内没收到 PCM 数据则判定失败，自动降级
+    this._renderjsFallbackTimer = setTimeout(() => {
+      if (this._recording && this._method === 'webaudio' && this._renderjsFrameCount === 0) {
+        this.warn('renderjs 录音 3 秒无数据，自动降级到其他方案')
+        this._recording = false
+        this._method = 'none'
+        this._renderjsControl?.stopRecording()
+        this._fallbackFromRenderjs()
+      }
+    }, 3000)
+  }
+
+  /** renderjs 失败后降级到 RecorderManager 或 Native */
+  private _fallbackFromRenderjs(): void {
+    if (this.isRecorderManagerAvailable()) {
+      try {
+        this.startRecorderManager()
+        this.log('✓ 已降级到 RecorderManager')
+        return
+      }
+      catch (error) {
+        this.warn(`RecorderManager 也失败: ${this.getErrorMessage(error)}`)
+      }
+    }
+    if (this.isNativeAvailable()) {
+      try {
+        this.startNative()
+        this.log('✓ 已降级到 Native AudioRecord')
+        return
+      }
+      catch (error) {
+        this.error(`所有录音方案均失败: ${this.getErrorMessage(error)}`)
+      }
+    }
+    this.error('当前环境不支持任何录音方案')
   }
 
   /** 停止录音 */
@@ -273,6 +335,12 @@ export class AudioRecorder {
 
     this.log(`停止录音 (当前方案: ${this._method})`)
     this._recording = false
+
+    // 清理 renderjs 降级定时器
+    if (this._renderjsFallbackTimer) {
+      clearTimeout(this._renderjsFallbackTimer)
+      this._renderjsFallbackTimer = null
+    }
 
     // 清理各方案的资源
     switch (this._method) {

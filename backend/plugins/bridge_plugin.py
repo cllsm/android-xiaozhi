@@ -135,9 +135,14 @@ class BridgePlugin(Plugin):
             # 语音识别结果
             text = json_data.get("text")
             if text:
+                # 小智协议: stt 消息的 state 字段
+                # "intermediate" = 中间结果, "final" / 无 state = 最终结果
+                state = json_data.get("state", "")
+                is_final = state == "final" or not state
                 await self._local_server.broadcast_event("text_response", {
                     "source": "stt",
                     "text": text,
+                    "is_final": is_final,
                 })
 
         # 所有 JSON 消息都作为 json_message 转发

@@ -14,10 +14,15 @@ declare module 'vue' {
   export interface GlobalComponents {
     AudioWave: typeof import('./../src/components/audio-wave/index.vue')['default']
     ChatBubble: typeof import('./../src/components/chat-bubble/index.vue')['default']
+    Circle: typeof import('./../src/components/myl-uniapp-fab/components/circle.vue')['default']
+    Column: typeof import('./../src/components/myl-uniapp-fab/components/column.vue')['default']
     EmotionFace: typeof import('./../src/components/emotion-face/index.vue')['default']
+    FloatingBall: typeof import('./../src/components/floating-ball/index.vue')['default']
+    MylUniappFab: typeof import('./../src/components/myl-uniapp-fab/index.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     StatusBar: typeof import('./../src/components/status-bar/index.vue')['default']
+    ThemePicker: typeof import('./../src/components/theme-picker/index.vue')['default']
   }
 }
 
@@ -25,8 +30,13 @@ declare module 'vue' {
 declare global {
   const AudioWave: typeof import('./../src/components/audio-wave/index.vue')['default']
   const ChatBubble: typeof import('./../src/components/chat-bubble/index.vue')['default']
+  const Circle: typeof import('./../src/components/myl-uniapp-fab/components/circle.vue')['default']
+  const Column: typeof import('./../src/components/myl-uniapp-fab/components/column.vue')['default']
   const EmotionFace: typeof import('./../src/components/emotion-face/index.vue')['default']
+  const FloatingBall: typeof import('./../src/components/floating-ball/index.vue')['default']
+  const MylUniappFab: typeof import('./../src/components/myl-uniapp-fab/index.vue')['default']
   const RouterLink: typeof import('vue-router')['RouterLink']
   const RouterView: typeof import('vue-router')['RouterView']
   const StatusBar: typeof import('./../src/components/status-bar/index.vue')['default']
+  const ThemePicker: typeof import('./../src/components/theme-picker/index.vue')['default']
 }

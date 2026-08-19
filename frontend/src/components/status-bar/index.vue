@@ -55,7 +55,8 @@ const serverDotClass = computed(() => {
 const serverLabel = computed(() => {
   if (isConnected.value) return '已连接'
   if (deviceState.value === 'CONNECTING') return '连接中'
-  return '未连接'
+  if (isBackendConnected.value) return '待连接'
+  return '离线'
 })
 
 /** 点击后端状态区域重试连接 */
@@ -71,15 +72,18 @@ function handleRetryBackend() {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 16px;
-  background-color: var(--theme-bg-color-secondary);
-  border-bottom: 1px solid var(--theme-border-color);
+  padding: 10px 16px;
+  // background-color: var(--theme-bg-color-secondary);
+  // border-bottom: 1px solid var(--theme-border-color);
 }
 
 .status-item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: 12px;
+  background-color: var(--theme-bg-card);
 }
 
 // 离线状态可点击重试
@@ -88,9 +92,10 @@ function handleRetryBackend() {
 }
 
 .dot {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
+  flex-shrink: 0;
   transition: background-color 0.3s ease;
 }
 
@@ -115,12 +120,13 @@ function handleRetryBackend() {
 
 .status-label {
   color: var(--theme-content-color);
-  font-size: 12px;
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .status-label.state {
   color: var(--theme-primary);
   font-weight: 600;
-  font-size: 13px;
+  font-size: 12px;
 }
 </style>

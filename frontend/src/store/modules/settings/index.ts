@@ -14,7 +14,7 @@ function hasChinese(text: string): boolean {
 export const useSettingsStore = defineStore('settings', () => {
   // ==================== 网络 ====================
   const protocol = ref('websocket')
-  const websocketUrl = ref('wss://api.xiaozhi.com/ws')
+  const websocketUrl = ref('wss://api.tenclass.net/xiaozhi/v1/')
   const websocketAccessToken = ref('')
   const mqttBroker = ref('')
   const mqttUsername = ref('')
@@ -84,16 +84,45 @@ export const useSettingsStore = defineStore('settings', () => {
     document.documentElement.setAttribute('data-theme', t)
     // #endif
     // #ifndef H5
-    // App 端通过 page 的 style 设置
+    // App 端：逐页设置 data-theme 属性到 page 节点
     try {
       const pages = getCurrentPages()
-      if (pages.length > 0) {
-        const page = pages[pages.length - 1] as any
-        page.$page?.setStyle?.({}) // 触发重渲染
-      }
+      pages.forEach((pg: any) => {
+        const pageEl = pg.$el?.querySelector?.('page') || pg.$el
+        if (pageEl) {
+          // UniApp App 端 page 节点支持 setAttribute
+          if (pageEl.setAttribute) {
+            pageEl.setAttribute('data-theme', t)
+          }
+          // 兼容：通过 style 触发重渲染
+          if (pg.$page?.setStyle) {
+            pg.$page.setStyle({ theme: t })
+          }
+        }
+      })
+      // 同时设置全局 CSS 变量（兜底方案）
+      _applyThemeCSSVars(t)
     }
     catch (_) {}
     // #endif
+  }
+
+  /** App 端兜底：直接通过 CSS 变量切换主题 */
+  function _applyThemeCSSVars(t: string) {
+    // 通过给所有 page 节点设置 style 来覆盖 CSS 变量
+    const lightVars = '--theme-primary:#0288d1;--theme-primary-dark:#01579b;--theme-success:#43a047;--theme-warning:#fb8c00;--theme-error:#e53935;--theme-main-color:#212121;--theme-content-color:#616161;--theme-tips-color:#9e9e9e;--theme-light-color:#bdbdbd;--theme-disabled-color:#e0e0e0;--theme-bg-color:#f5f5f5;--theme-bg-color-secondary:#ffffff;--theme-bg-card:#ffffff;--theme-bg-input:#f0f0f0;--theme-border-color:#e0e0e0'
+    const darkVars = '--theme-primary:#4fc3f7;--theme-primary-dark:#0288d1;--theme-success:#66bb6a;--theme-warning:#ffa726;--theme-error:#ef5350;--theme-main-color:#e0e0e0;--theme-content-color:#9e9e9e;--theme-tips-color:#616161;--theme-light-color:#4a4a4a;--theme-disabled-color:#3a3a3a;--theme-bg-color:#16213e;--theme-bg-color-secondary:#1a1a2e;--theme-bg-card:#1f2940;--theme-bg-input:#263148;--theme-border-color:#263148'
+    const cssVars = t === 'light' ? lightVars : darkVars
+    try {
+      const pages = getCurrentPages()
+      pages.forEach((pg: any) => {
+        const pageEl = pg.$el?.querySelector?.('page') || pg.$el
+        if (pageEl?.setAttribute) {
+          pageEl.setAttribute('style', cssVars)
+        }
+      })
+    }
+    catch (_) {}
   }
 
   // ==================== 内部状态 ====================
