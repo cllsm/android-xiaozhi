@@ -20,6 +20,10 @@
 
 Android SDK 路径、签名信息和网易云无损网关 AppKey 写入根目录 `local.properties` 或同名环境变量。常用键名包括 `sdk.dir`、`XIAOZHI_STORE_FILE`、`XIAOZHI_KEY_ALIAS`、`XIAOZHI_NETEASE_LOSSLESS_APP_KEY`。不要提交 `local.properties`、证书、密码、AppKey、APK 或构建目录。
 
+## 出处与分发要求
+
+转载、引用、参考、二开或分发本仓库时，保留 `NOTICE.md` 并在项目 README、发布页或关于页等显著位置注明 `cllsm/xiaozhi` 与仓库地址。二开项目需写明修改内容，不能表述为原项目官方版本。第三方依赖和模型继续遵守各自上游协议。
+
 ## 代码风格与命名约定
 
 Kotlin 使用 4 空格缩进和官方 Android 风格。类与对象使用 `PascalCase`，函数与变量使用 `camelCase`，常量使用 `UPPER_SNAKE_CASE`。Compose 组件保持单一职责，状态优先使用 `StateFlow`。新增测试文件命名为 `*Test.kt`。
