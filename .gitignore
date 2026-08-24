@@ -44,6 +44,8 @@ pnpm-debug.log*
 .idea/
 .vscode/
 .hbuilderx/
+.gradle/
+.kotlin/
 *.swp
 *.swo
 *~
@@ -73,6 +75,9 @@ logs/
 .env
 .env.*
 !.env.example
+local.properties
+*.jks
+*.keystore
 
 # 小智配置目录
 .xiaozhi/
@@ -90,6 +95,15 @@ logs/
 *.aab
 *.ipa
 *.dSYM/
+
+# 本地联调与自动化临时产物
+.tmp-sherpa/
+ocr-screen.ps1
+/settings-*.png
+/settings.pb
+/xiaozhi-*.png
+/xiaozhi-*.xml
+/wechat-*.png
 
 # ===========================
 # 临时文件
