@@ -17,6 +17,15 @@ def signingKeyPassword = System.getenv('XIAOZHI_KEY_PASSWORD') ?: localPropertie
 def releaseAbis = System.getenv('XIAOZHI_RELEASE_ABIS') ?: localProperties.getProperty('XIAOZHI_RELEASE_ABIS')
 def neteaseLosslessAppKey = System.getenv('XIAOZHI_NETEASE_LOSSLESS_APP_KEY') ?: localProperties.getProperty('XIAOZHI_NETEASE_LOSSLESS_APP_KEY') ?: ''
 def escapedNeteaseLosslessAppKey = neteaseLosslessAppKey.replace('\\', '\\\\').replace('"', '\\"')
+def signingConfigReady = signingStorePath && signingStorePassword && signingKeyAlias && signingKeyPassword
+
+if (!signingConfigReady) {
+    throw new GradleException(
+        'Xiaozhi signing config is required. Set XIAOZHI_STORE_FILE, ' +
+        'XIAOZHI_STORE_PASSWORD, XIAOZHI_KEY_ALIAS, and XIAOZHI_KEY_PASSWORD ' +
+        'in local.properties or the environment.'
+    )
+}
 
 android {
     namespace 'com.xiaozhi.android'
@@ -26,8 +35,8 @@ android {
         applicationId 'com.xiaozhi.android'
         minSdk 26
         targetSdk 36
-        versionCode 2
-        versionName '0.2.0'
+        versionCode 6
+        versionName '0.3.0'
         buildConfigField 'String', 'NETEASE_LOSSLESS_APP_KEY', "\"${escapedNeteaseLosslessAppKey}\""
         if (releaseAbis) {
             ndk {
@@ -37,24 +46,23 @@ android {
     }
 
     signingConfigs {
-        if (signingStorePath && signingStorePassword && signingKeyAlias && signingKeyPassword) {
-            release {
-                storeFile file(signingStorePath)
-                storePassword signingStorePassword
-                keyAlias signingKeyAlias
-                keyPassword signingKeyPassword
-            }
+        xiaozhiRelease {
+            storeFile file(signingStorePath)
+            storePassword signingStorePassword
+            keyAlias signingKeyAlias
+            keyPassword signingKeyPassword
         }
     }
 
     buildTypes {
+        debug {
+            signingConfig signingConfigs.xiaozhiRelease
+        }
         release {
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            if (signingStorePath && signingStorePassword && signingKeyAlias && signingKeyPassword) {
-                signingConfig signingConfigs.release
-            }
+            signingConfig signingConfigs.xiaozhiRelease
         }
     }
 

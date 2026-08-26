@@ -108,6 +108,11 @@ private fun privacyItems(): List<Triple<ImageVector, String, String>> {
     return listOf(
         Triple(
             Icons.Filled.PrivacyTip,
+            "陪学模式",
+            "开启固定机位观察后，陪做作业和陪读会在学习期间保持相机会话；按设定间隔或孩子说话完成时取单帧识别。全程不录制视频、不保存画面，仅上传当次需要识别的 JPEG 单帧。跟读转写仅用于当次评测，报告保存在本地。"
+        ),
+        Triple(
+            Icons.Filled.PrivacyTip,
             "语音与文字",
             "仅在你主动对话、唤醒词触发或发送文字时，将对应内容发送到配置的小智服务器以生成回复。"
         ),

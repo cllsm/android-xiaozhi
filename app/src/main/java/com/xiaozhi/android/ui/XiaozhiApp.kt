@@ -61,6 +61,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.DarkMode
@@ -75,6 +76,7 @@ import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.Visibility
@@ -89,6 +91,8 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -123,6 +127,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.xiaozhi.android.BuildConfig
 import com.xiaozhi.android.R
 import com.xiaozhi.android.core.ChatMessage
 import com.xiaozhi.android.core.ConnectionStatus
@@ -147,6 +152,7 @@ import kotlin.math.roundToInt
 private enum class Screen {
     Onboarding,
     Home,
+    Study,
     Settings,
     RecentMusic,
     Developer,
@@ -196,12 +202,105 @@ private fun AppContent(
             if (settings.onboardingCompleted) Screen.Home else Screen.Onboarding
         )
     }
+    var privacyReturnScreen by remember { mutableStateOf(Screen.Home) }
+    var studyPreviewFullscreen by remember { mutableStateOf(false) }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Box(modifier = Modifier.weight(1f)) {
+                if (!settingsReady) return@Box
+
+                when (screen) {
+                    Screen.Onboarding -> OnboardingScreen(
+                        onFinish = viewModel::completeOnboarding,
+                        onOpenPrivacy = {
+                            privacyReturnScreen = Screen.Onboarding
+                            screen = Screen.Privacy
+                        }
+                    )
+                    Screen.Home -> HomeScreen(
+                        settings = settings,
+                        chat = chat,
+                        runtimeState = runtimeState,
+                        onSendText = viewModel::sendText,
+                        onAnalyzeScreen = viewModel::analyzeScreen,
+                        onAnalyzeCamera = viewModel::analyzeCamera,
+                        onOpenRecentMusic = { screen = Screen.RecentMusic }
+                    )
+                    Screen.Study -> StudyScreen(
+                        viewModel = viewModel,
+                        onFullscreenChange = { studyPreviewFullscreen = it }
+                    )
+                    Screen.RecentMusic -> RecentMusicScreen(
+                        records = recentMusic,
+                        playbackState = musicPlaybackState,
+                        operationMessage = musicOperationMessage,
+                        onBack = { screen = Screen.Home },
+                        onReplay = viewModel::replayMusic,
+                        onTogglePlayback = viewModel::toggleMusicPlayback,
+                        onClear = viewModel::clearMusicHistory,
+                        onClearMessage = viewModel::clearMusicOperationMessage
+                    )
+                    Screen.Settings -> SettingsScreen(
+                        settings = settings,
+                        onUpdateSettings = viewModel::updateSettings,
+                        onClearChat = viewModel::clearChat,
+                        onResetSettings = viewModel::resetSettings,
+                        onExportChat = viewModel::exportChat,
+                        onImportChat = viewModel::importChat,
+                        onExportCredential = viewModel::exportCredential,
+                        onImportCredential = viewModel::importCredential,
+                        operationMessage = operationMessage,
+                        onClearOperationMessage = viewModel::clearOperationMessage,
+                        onOpenDiagnostics = { screen = Screen.Diagnostics },
+                        onOpenPrivacy = {
+                            privacyReturnScreen = Screen.Settings
+                            screen = Screen.Privacy
+                        },
+                        onOpenDeveloper = { screen = Screen.Developer }
+                    )
+                    Screen.Developer -> DeveloperSettingsScreen(
+                        settings = settings,
+                        onUpdateSettings = viewModel::updateSettings,
+                        operationMessage = operationMessage,
+                        onClearOperationMessage = viewModel::clearOperationMessage,
+                        onBack = { screen = Screen.Settings }
+                    )
+                    Screen.Diagnostics -> DiagnosticsScreen(
+                        report = diagnosticReport,
+                        checking = diagnosticRunning,
+                        onBack = { screen = Screen.Settings },
+                        onRun = viewModel::runDiagnostics,
+                        onBuildReportText = viewModel::diagnosticText
+                    )
+                    Screen.Privacy -> PrivacyScreen(
+                        onBack = { screen = privacyReturnScreen }
+                    )
+                }
+            }
+
+            if (screen in mainScreens &&
+                !(screen == Screen.Study && studyPreviewFullscreen)
+            ) {
+                MainBottomNavigation(
+                    current = screen,
+                    onSelect = { selected -> screen = selected }
+                )
+            }
+        }
+
+        musicSelectionPrompt?.let { prompt ->
+            MusicSelectionDialog(
+                prompt = prompt,
+                onSelect = viewModel::selectMusicCandidate,
+                onDismiss = viewModel::dismissMusicSelection
+            )
+        }
+
         AnimatedVisibility(
             visible = showSplash,
             enter = fadeIn(tween(160)),
@@ -215,77 +314,35 @@ private fun AppContent(
                 contentScale = ContentScale.FillBounds
             )
         }
+    }
+}
 
-        if (!settingsReady) return@Box
-        when (screen) {
-            Screen.Onboarding -> OnboardingScreen(
-                onFinish = viewModel::completeOnboarding,
-                onOpenPrivacy = { screen = Screen.Privacy }
-            )
-            Screen.Home -> HomeScreen(
-                settings = settings,
-                chat = chat,
-                runtimeState = runtimeState,
-                onSendText = viewModel::sendText,
-                onAnalyzeScreen = viewModel::analyzeScreen,
-                onAnalyzeCamera = viewModel::analyzeCamera,
-                onOpenSettings = { screen = Screen.Settings },
-                onOpenRecentMusic = { screen = Screen.RecentMusic }
-            )
-            Screen.RecentMusic -> RecentMusicScreen(
-                records = recentMusic,
-                playbackState = musicPlaybackState,
-                operationMessage = musicOperationMessage,
-                onBack = { screen = Screen.Home },
-                onReplay = viewModel::replayMusic,
-                onTogglePlayback = viewModel::toggleMusicPlayback,
-                onClear = viewModel::clearMusicHistory,
-                onClearMessage = viewModel::clearMusicOperationMessage
-            )
-            Screen.Settings -> SettingsScreen(
-                settings = settings,
-                onUpdateSettings = viewModel::updateSettings,
-                onClearChat = viewModel::clearChat,
-                onResetSettings = viewModel::resetSettings,
-                onExportChat = viewModel::exportChat,
-                onImportChat = viewModel::importChat,
-                onExportCredential = viewModel::exportCredential,
-                onImportCredential = viewModel::importCredential,
-                operationMessage = operationMessage,
-                onClearOperationMessage = viewModel::clearOperationMessage,
-                onOpenDiagnostics = { screen = Screen.Diagnostics },
-                onOpenPrivacy = { screen = Screen.Privacy },
-                onOpenDeveloper = { screen = Screen.Developer },
-                onBack = { screen = Screen.Home }
-            )
-            Screen.Developer -> DeveloperSettingsScreen(
-                settings = settings,
-                onUpdateSettings = viewModel::updateSettings,
-                operationMessage = operationMessage,
-                onClearOperationMessage = viewModel::clearOperationMessage,
-                onBack = { screen = Screen.Settings }
-            )
-            Screen.Diagnostics -> DiagnosticsScreen(
-                report = diagnosticReport,
-                checking = diagnosticRunning,
-                onBack = { screen = Screen.Home },
-                onRun = viewModel::runDiagnostics,
-                onBuildReportText = viewModel::diagnosticText
-            )
-            Screen.Privacy -> PrivacyScreen(
-                onBack = {
-                    screen = if (settings.onboardingCompleted) Screen.Home else Screen.Onboarding
-                }
-            )
-        }
+private val mainScreens = listOf(Screen.Home, Screen.Study, Screen.Settings)
 
-        musicSelectionPrompt?.let { prompt ->
-            MusicSelectionDialog(
-                prompt = prompt,
-                onSelect = viewModel::selectMusicCandidate,
-                onDismiss = viewModel::dismissMusicSelection
-            )
-        }
+@Composable
+private fun MainBottomNavigation(
+    current: Screen,
+    onSelect: (Screen) -> Unit
+) {
+    NavigationBar {
+        NavigationBarItem(
+            selected = current == Screen.Home,
+            onClick = { onSelect(Screen.Home) },
+            icon = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null) },
+            label = { Text("对话") }
+        )
+        NavigationBarItem(
+            selected = current == Screen.Study,
+            onClick = { onSelect(Screen.Study) },
+            icon = { Icon(Icons.Filled.School, contentDescription = null) },
+            label = { Text("陪学") }
+        )
+        NavigationBarItem(
+            selected = current == Screen.Settings,
+            onClick = { onSelect(Screen.Settings) },
+            icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+            label = { Text("设置") }
+        )
     }
 }
 
@@ -376,7 +433,6 @@ private fun HomeScreen(
     onSendText: (String) -> Boolean,
     onAnalyzeScreen: (String) -> Unit,
     onAnalyzeCamera: (String) -> Unit,
-    onOpenSettings: () -> Unit,
     onOpenRecentMusic: () -> Unit
 ) {
     val context = LocalContext.current
@@ -616,17 +672,15 @@ private fun HomeScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .statusBarsPadding()
-            .navigationBarsPadding()
-    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+        ) {
         HomeTopBar(
             settings = settings,
             runtimeState = runtimeState,
-            serviceRunning = serviceRunning,
-            onOpenSettings = onOpenSettings
+            serviceRunning = serviceRunning
         )
 
         Box(
@@ -1159,8 +1213,7 @@ private fun QuickToolsPanel(
 private fun HomeTopBar(
     settings: SettingsState,
     runtimeState: VoiceRuntimeState,
-    serviceRunning: Boolean,
-    onOpenSettings: () -> Unit
+    serviceRunning: Boolean
 ) {
     Row(
         modifier = Modifier
@@ -1180,11 +1233,6 @@ private fun HomeTopBar(
                 color = homeStatusColor(runtimeState, serviceRunning)
             )
         }
-
-        RoundIconButton(
-            icon = { Icon(Icons.Filled.Settings, contentDescription = "设置") },
-            onClick = onOpenSettings
-        )
     }
 }
 
@@ -1850,7 +1898,6 @@ private fun SettingsScreen(
     onOpenDiagnostics: () -> Unit,
     onOpenPrivacy: () -> Unit,
     onOpenDeveloper: () -> Unit,
-    onBack: () -> Unit
 ) {
     var draft by remember(settings) { mutableStateOf(settings) }
     val context = LocalContext.current
@@ -1901,19 +1948,9 @@ private fun SettingsScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
+                .padding(start = 20.dp, end = 16.dp, top = 14.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            RoundIconButton(
-                icon = {
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "返回"
-                    )
-                },
-                onClick = onBack
-            )
-            Spacer(modifier = Modifier.width(12.dp))
             Text(
                 "设置",
                 color = MaterialTheme.colorScheme.onBackground,
@@ -1926,7 +1963,6 @@ private fun SettingsScreen(
                 .fillMaxWidth()
                 .weight(1f)
                 .verticalScroll(rememberScrollState())
-                .navigationBarsPadding()
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
@@ -2100,7 +2136,7 @@ private fun SettingsScreen(
 
             if (sectionVisible(settingsQuery, "关于", "关于 版本 默认 恢复")) {
                 SettingsSection("关于") {
-                SettingsValueRow("版本", "0.1.0")
+                    SettingsValueRow("版本", BuildConfig.VERSION_NAME)
                     SettingsActionRow(
                         title = "恢复默认设置",
                         hint = "重置唤醒词、音频、音乐和外观配置"

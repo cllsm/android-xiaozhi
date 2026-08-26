@@ -28,6 +28,11 @@ import com.xiaozhi.android.media.NativeMusicController
 import com.xiaozhi.android.mcp.McpDispatcher
 import com.xiaozhi.android.network.OtaClient
 import com.xiaozhi.android.network.XiaozhiWebSocketClient
+import com.xiaozhi.android.study.ReadingEvaluator
+import com.xiaozhi.android.study.StudyMode
+import com.xiaozhi.android.study.StudyObservationEngine
+import com.xiaozhi.android.study.StudySessionManager
+import com.xiaozhi.android.study.StudySessionState
 import com.xiaozhi.android.wake.SherpaWakeWordEngine
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
@@ -463,6 +468,22 @@ class VoiceForegroundService : LifecycleService() {
                         val state = message.optString("state")
                         VoiceSessionState.updateConversation(currentText = text)
                         if (text.isNotBlank() && (state.isBlank() || state == "final")) {
+                            val studyState = StudySessionState.state.value
+                            if (studyState.mode != StudyMode.None) {
+                                StudyObservationEngine.requestSpeechFrame()
+                            }
+                            if (studyState.mode == StudyMode.Reading) {
+                                val evaluation = StudySessionManager.evaluateTranscript(text)
+                                if (evaluation != null) {
+                                    socket.sendAbortSpeaking()
+                                    VoiceSessionState.appendChat(text, fromUser = true)
+                                    socket.sendText(
+                                        "陪读评测结果：${ReadingEvaluator.feedbackFor(evaluation)}" +
+                                            "请用温和的儿童阅读导师口吻给出一句简短反馈。"
+                                    )
+                                    return
+                                }
+                            }
                             NativeMusicController.pendingSelectionIndex(text)?.let { index ->
                                 socket.sendAbortSpeaking()
                                 VoiceSessionState.appendChat(text, fromUser = true)

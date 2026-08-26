@@ -21,6 +21,12 @@ class McpDispatcher(
         add(InstalledAppsTool(context))
         add(ScreenshotTool(context))
         add(CameraTool(context))
+        add(StudyStartTool())
+        add(StudyStatusTool())
+        add(HomeworkCapturePageTool())
+        add(HomeworkGetContextTool())
+        add(ReadingCapturePageTool())
+        add(ReadingGetContextTool())
         add(WeatherTool())
         add(ForecastTool())
         if (settings.musicEnabled) {

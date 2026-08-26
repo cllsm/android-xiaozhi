@@ -26,6 +26,13 @@ import com.xiaozhi.android.mcp.ScreenVisionPromptBuilder
 import com.xiaozhi.android.mcp.VisionService
 import com.xiaozhi.android.service.MediaProjectionForegroundService
 import com.xiaozhi.android.service.VoiceForegroundService
+import com.xiaozhi.android.data.StudySessionRepository
+import com.xiaozhi.android.study.ReadingPromptBuilder
+import com.xiaozhi.android.study.StudyCaptureResult
+import com.xiaozhi.android.study.StudyMode
+import com.xiaozhi.android.study.StudySessionManager
+import com.xiaozhi.android.study.StudySessionState
+import com.xiaozhi.android.study.StudySettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,6 +50,7 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
     private val diagnosticRepository = DiagnosticRepository(application)
     private val credentialRepository = DeviceCredentialRepository(application)
     private val musicHistoryRepository = MusicHistoryRepository.initialize(application)
+    private val studySessionRepository = StudySessionRepository(application)
     private val visionRunning = AtomicBoolean(false)
 
     private val settingsFlow = MutableStateFlow(SettingsState())
@@ -60,6 +68,10 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
     val musicPlaybackState = MusicPlaybackState.state
 
     val musicSelectionPrompt = NativeMusicController.selectionPrompt
+
+    val studyState = StudySessionState.state
+    val studySettings = studySessionRepository.settings
+    val studyRecords = studySessionRepository.records
 
     private val diagnosticReportFlow = MutableStateFlow<DiagnosticReport?>(null)
     val diagnosticReport: StateFlow<DiagnosticReport?> = diagnosticReportFlow.asStateFlow()
@@ -166,6 +178,82 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
 
     fun clearMusicOperationMessage() {
         musicOperationMessageFlow.value = null
+    }
+
+    fun startStudy(mode: StudyMode) {
+        val result = StudySessionManager.start(mode)
+        VoiceSessionState.appendChat(result.message, fromUser = false)
+    }
+
+    fun captureHomeworkPage(intent: String, questionNumber: Int? = null) {
+        runStudyCapture {
+            StudySessionManager.captureHomeworkPage(intent, questionNumber)
+        }
+    }
+
+    fun captureReadingPage() {
+        runStudyCapture {
+            StudySessionManager.captureReadingPage()
+        }
+    }
+
+    fun requestHomeworkHint(questionNumber: Int) {
+        val context = StudySessionManager.homeworkContext(questionNumber)
+        if (!context.success) {
+            VoiceSessionState.appendChat(context.message, fromUser = false)
+            return
+        }
+        val payload = context.payload ?: return
+        val prompt = """
+            请按陪学导师规则讲解第 ${payload.optInt("item_index")} 题。
+            题目：${payload.optString("question")}
+            年级：${studyState.value.settings.childGrade}
+            提示层级：${payload.optInt("hint_level")}
+            ${payload.optJSONObject("teaching_rules")?.optString("instruction").orEmpty()}
+            要求：先肯定孩子已经做到的部分；不要提工具和 JSON；
+            除最终计算结果外可以逐步引导；最后让孩子说出或写出下一步。
+        """.trimIndent()
+        sendText(prompt)
+    }
+
+    fun repeatReadingSentence() {
+        val context = StudySessionManager.readingContext()
+        if (!context.success) {
+            VoiceSessionState.appendChat(context.message, fromUser = false)
+            return
+        }
+        val sentence = context.payload?.optString("sentence").orEmpty()
+        sendText("请用清晰、温和的儿童领读口吻只朗读这句话：$sentence")
+    }
+
+    fun askReadingComprehension() {
+        val context = StudySessionManager.readingContext()
+        if (!context.success) {
+            VoiceSessionState.appendChat(context.message, fromUser = false)
+            return
+        }
+        val sentence = context.payload?.optString("sentence").orEmpty()
+        sendText(ReadingPromptBuilder.buildQuestion(sentence, studyState.value.settings.childGrade))
+    }
+
+    fun moveReadingSentence(delta: Int) {
+        StudySessionManager.moveReadingSentence(delta)
+    }
+
+    fun stopStudy() {
+        val record = StudySessionManager.stop()
+        VoiceSessionState.appendChat(
+            record?.let { "本次陪学已结束，报告已保存" } ?: "当前没有进行中的陪学会话",
+            fromUser = false
+        )
+    }
+
+    fun updateStudySettings(settings: StudySettings) {
+        StudySessionManager.updateSettings(settings)
+    }
+
+    fun clearStudyRecords() {
+        viewModelScope.launch { studySessionRepository.clearRecords() }
     }
 
     fun sendText(text: String): Boolean {
@@ -325,6 +413,27 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
 
     fun clearOperationMessage() {
         operationMessageFlow.value = null
+    }
+
+    private fun runStudyCapture(capture: suspend () -> StudyCaptureResult) {
+        if (studyState.value.captureRunning) return
+        VoiceSessionState.appendChat("正在拍摄识别...", fromUser = false)
+        viewModelScope.launch {
+            try {
+                val ready = withContext(Dispatchers.IO) { ensureVisionServiceReady() }
+                val result = if (ready) {
+                    withContext(Dispatchers.IO) { capture() }
+                } else {
+                    StudyCaptureResult(false, "视觉分析服务暂未就绪，请先开启语音服务并完成连接")
+                }
+                VoiceSessionState.appendChat(result.message, fromUser = false)
+            } catch (error: Exception) {
+                VoiceSessionState.appendChat(
+                    error.message ?: "陪学识别失败，请稍后重试",
+                    fromUser = false
+                )
+            }
+        }
     }
 
     private fun parseChatExport(raw: String): List<ChatMessage> {
