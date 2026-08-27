@@ -25,14 +25,16 @@ object StudySessionState {
     }
 
     fun activate() {
+        val now = System.currentTimeMillis()
         updateCurrent { state ->
             state.copy(
                 phase = StudyPhase.Active,
                 startedAt = if (state.startedAt == 0L) {
-                    System.currentTimeMillis()
+                    now
                 } else {
                     state.startedAt
-                }
+                },
+                lastObservationAttemptAt = now
             )
         }
     }
@@ -83,12 +85,40 @@ object StudySessionState {
         updateCurrent { it.copy(observationRunning = running) }
     }
 
+    fun setObservationIssue(message: String?) {
+        updateCurrent { state ->
+            state.copy(
+                observationIssue = message.orEmpty(),
+                statusMessage = message.orEmpty().ifBlank { state.statusMessage }
+            )
+        }
+    }
+
     fun recordObservationFrame(trigger: String, at: Long = System.currentTimeMillis()) {
         updateCurrent { state ->
             state.copy(
                 observationFrames = state.observationFrames + 1,
                 lastObservationAt = at,
-                lastObservationTrigger = trigger
+                lastObservationAttemptAt = at,
+                lastObservationTrigger = trigger,
+                lastCaptureFailure = "",
+                consecutiveCaptureFailures = 0
+            )
+        }
+    }
+
+    fun recordObservationFailure(message: String, at: Long = System.currentTimeMillis()) {
+        updateCurrent { state ->
+            val failures = state.consecutiveCaptureFailures + 1
+            state.copy(
+                lastObservationAttemptAt = at,
+                lastCaptureFailure = message,
+                consecutiveCaptureFailures = failures,
+                statusMessage = if (failures >= 2) {
+                    "$message；语音和文字陪学仍可用，稍后自动重试"
+                } else {
+                    message
+                }
             )
         }
     }

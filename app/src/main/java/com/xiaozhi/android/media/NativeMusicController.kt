@@ -106,6 +106,32 @@ object NativeMusicController {
                     sourceName = searchResult.source.displayName
                 )
             }
+        val rememberedPreference = if (
+            activeSettings.musicRememberSelection && !fromPlaybackQueue
+        ) {
+            MusicHistoryRepository.selectionPreference(songName)
+        } else {
+            null
+        }
+        val preferredByHistory = rememberedPreference?.let { preference ->
+            options.firstOrNull { candidate ->
+                candidate.song.displayName == preference.title &&
+                    candidate.sourceId == preference.sourceId
+            } ?: options.firstOrNull { candidate ->
+                candidate.sourceId == preference.sourceId
+            }
+        }
+
+        if (preferredByHistory != null) {
+            val selection = resolvePreferredSelection(activeSettings, preferredByHistory)
+                ?: selectPlayableSong(
+                    settings = activeSettings,
+                    songName = preferredByHistory.song.displayName,
+                    skipSourceId = preferredByHistory.sourceId
+                )
+            if (selection != null) return playSelection(selection)
+        }
+
         if (options.size > 1 && !fromPlaybackQueue) {
             showSelectionPrompt(songName, options)
             MusicPlaybackState.update { it.copy(loading = false) }
@@ -142,10 +168,11 @@ object NativeMusicController {
             ?.any { it.number == index }?.takeIf { it }?.let { index }
     }
 
-    fun selectPendingCandidate(index: Int): String {
+    fun selectPendingCandidate(index: Int, rememberSelection: Boolean = true): String {
         val activeSettings = settings ?: return "音乐服务尚未初始化"
         if (!activeSettings.musicEnabled) return "音乐工具未启用，请在设置中开启"
 
+        val query = selectionPromptFlow.value?.query
         val candidate = takePendingCandidate(index) ?: return "请输入有效的序号"
         MusicPlaybackState.update { it.copy(loading = true) }
 
@@ -158,6 +185,15 @@ object NativeMusicController {
             ?: return "所选歌曲暂无法播放：${candidate.song.displayName}".also {
                 MusicPlaybackState.update { current -> current.copy(loading = false) }
             }
+
+        if (rememberSelection && activeSettings.musicRememberSelection) {
+            MusicHistoryRepository.rememberSelection(
+                query = query ?: candidate.song.displayName,
+                title = candidate.song.displayName,
+                sourceId = candidate.sourceId,
+                sourceName = candidate.sourceName
+            )
+        }
 
         return playSelection(selection)
     }
@@ -393,7 +429,7 @@ object NativeMusicController {
         val timeoutJob = playbackScope.launch {
             delay(AUTO_SELECTION_DELAY_MS)
             if (selectionPromptFlow.value == prompt) {
-                val result = selectPendingCandidate(1)
+                val result = selectPendingCandidate(1, rememberSelection = false)
                 VoiceSessionState.appendChat(result, fromUser = false)
             }
         }

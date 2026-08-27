@@ -383,7 +383,7 @@ class SystemOverlayService : Service() {
             layoutParams = LinearLayout.LayoutParams(dp(8), dp(8))
         }
         statusView = TextView(this).apply {
-            text = "服务离线"
+            text = "语音待启动"
             textSize = 11f
             setTextColor(COLOR_TEXT_SECONDARY)
             maxLines = 2
@@ -569,10 +569,13 @@ class SystemOverlayService : Service() {
         bindAction(primaryAction) {
             val canControl = VoiceForegroundService.isRunning() && (
                 latestState.status == ConnectionStatus.Connected ||
-                    latestState.status == ConnectionStatus.Connecting
+                    latestState.status == ConnectionStatus.Connecting ||
+                    latestState.status == ConnectionStatus.Error
                 )
             when {
                 !canControl -> openApp()
+                latestState.status == ConnectionStatus.Error ->
+                    VoiceForegroundService.reconnectNow(this)
                 latestState.deviceState == DeviceState.Listening ->
                     VoiceForegroundService.stopListening(this)
                 latestState.status == ConnectionStatus.Connected -> {
@@ -841,13 +844,18 @@ class SystemOverlayService : Service() {
             stopPulses()
         }
 
-        statusView.text = state.statusText.ifBlank {
-            if (running) "语音服务运行中" else "服务离线"
+        statusView.text = when {
+            !running -> "语音待启动"
+            state.waitingForNetwork -> "等待网络恢复"
+            state.status == ConnectionStatus.Error ->
+                if (state.autoRecoveryEnabled) "断开 · 自动恢复" else "断开 · 可重连"
+            else -> state.statusText.ifBlank { "语音服务运行中" }
         }
         primaryAction.text = when {
             !running -> "打开 App 启动"
             state.status == ConnectionStatus.ActivationRequired -> "打开 App 激活"
             state.status == ConnectionStatus.Connecting -> "连接中"
+            state.status == ConnectionStatus.Error -> "立即重连"
             state.deviceState == DeviceState.Listening -> "停止聆听"
             state.wakeWordEnabled -> "手动聆听"
             else -> "开始聆听"

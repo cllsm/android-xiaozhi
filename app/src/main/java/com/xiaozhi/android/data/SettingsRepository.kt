@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.xiaozhi.android.core.SettingsState
+import com.xiaozhi.android.core.ThemeMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
@@ -35,7 +36,9 @@ class SettingsRepository(private val context: Context) {
         val MusicNeteaseLosslessAppKey = stringPreferencesKey("music_netease_lossless_app_key")
         val MusicNeteaseApiUrl = stringPreferencesKey("music_netease_api_url")
         val MusicDefaultQuality = stringPreferencesKey("music_default_quality")
-        val DarkTheme = booleanPreferencesKey("dark_theme")
+        val LegacyDarkTheme = booleanPreferencesKey("dark_theme")
+        val ThemeModeKey = stringPreferencesKey("theme_mode")
+        val MusicRememberSelection = booleanPreferencesKey("music_remember_selection")
         val OverlayEnabled = booleanPreferencesKey("overlay_enabled")
         val ChatHistoryLimit = intPreferencesKey("chat_history_limit")
         val ConnectRetryEnabled = booleanPreferencesKey("connect_retry_enabled")
@@ -73,7 +76,12 @@ class SettingsRepository(private val context: Context) {
                 },
                 musicNeteaseApiUrl = prefs[Keys.MusicNeteaseApiUrl] ?: "",
                 musicDefaultQuality = prefs[Keys.MusicDefaultQuality] ?: "320k",
-                darkTheme = prefs[Keys.DarkTheme] ?: true,
+                themeMode = prefs[Keys.ThemeModeKey]?.toThemeMode()
+                    ?: prefs[Keys.LegacyDarkTheme]?.let { dark ->
+                        if (dark) ThemeMode.Dark else ThemeMode.Light
+                    }
+                    ?: ThemeMode.System,
+                musicRememberSelection = prefs[Keys.MusicRememberSelection] ?: true,
                 overlayEnabled = prefs[Keys.OverlayEnabled] ?: false,
                 chatHistoryLimit = prefs[Keys.ChatHistoryLimit] ?: 200,
                 connectRetryEnabled = prefs[Keys.ConnectRetryEnabled] ?: true,
@@ -101,7 +109,8 @@ class SettingsRepository(private val context: Context) {
             prefs[Keys.MusicNeteaseLosslessAppKey] = newState.musicNeteaseLosslessAppKey
             prefs[Keys.MusicNeteaseApiUrl] = newState.musicNeteaseApiUrl
             prefs[Keys.MusicDefaultQuality] = newState.musicDefaultQuality
-            prefs[Keys.DarkTheme] = newState.darkTheme
+            prefs[Keys.ThemeModeKey] = newState.themeMode.name
+            prefs[Keys.MusicRememberSelection] = newState.musicRememberSelection
             prefs[Keys.OverlayEnabled] = newState.overlayEnabled
             prefs[Keys.ChatHistoryLimit] = newState.chatHistoryLimit
             prefs[Keys.ConnectRetryEnabled] = newState.connectRetryEnabled
@@ -113,3 +122,10 @@ class SettingsRepository(private val context: Context) {
 
 private fun emptyPreferences(): androidx.datastore.preferences.core.Preferences =
     androidx.datastore.preferences.core.emptyPreferences()
+
+private fun String.toThemeMode(): ThemeMode? = when (lowercase()) {
+    "system" -> ThemeMode.System
+    "dark" -> ThemeMode.Dark
+    "light" -> ThemeMode.Light
+    else -> null
+}

@@ -18,8 +18,11 @@ def releaseAbis = System.getenv('XIAOZHI_RELEASE_ABIS') ?: localProperties.getPr
 def neteaseLosslessAppKey = System.getenv('XIAOZHI_NETEASE_LOSSLESS_APP_KEY') ?: localProperties.getProperty('XIAOZHI_NETEASE_LOSSLESS_APP_KEY') ?: ''
 def escapedNeteaseLosslessAppKey = neteaseLosslessAppKey.replace('\\', '\\\\').replace('"', '\\"')
 def signingConfigReady = signingStorePath && signingStorePassword && signingKeyAlias && signingKeyPassword
+def releaseBuildRequested = gradle.startParameter.taskNames.any {
+    it.toLowerCase(Locale.ROOT).contains('release')
+}
 
-if (!signingConfigReady) {
+if (!signingConfigReady && releaseBuildRequested) {
     throw new GradleException(
         'Xiaozhi signing config is required. Set XIAOZHI_STORE_FILE, ' +
         'XIAOZHI_STORE_PASSWORD, XIAOZHI_KEY_ALIAS, and XIAOZHI_KEY_PASSWORD ' +
@@ -45,24 +48,30 @@ android {
         }
     }
 
-    signingConfigs {
-        xiaozhiRelease {
-            storeFile file(signingStorePath)
-            storePassword signingStorePassword
-            keyAlias signingKeyAlias
-            keyPassword signingKeyPassword
+    if (signingConfigReady) {
+        signingConfigs {
+            xiaozhiRelease {
+                storeFile file(signingStorePath)
+                storePassword signingStorePassword
+                keyAlias signingKeyAlias
+                keyPassword signingKeyPassword
+            }
         }
     }
 
     buildTypes {
         debug {
-            signingConfig signingConfigs.xiaozhiRelease
+            if (signingConfigReady) {
+                signingConfig signingConfigs.xiaozhiRelease
+            }
         }
         release {
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            signingConfig signingConfigs.xiaozhiRelease
+            if (signingConfigReady) {
+                signingConfig signingConfigs.xiaozhiRelease
+            }
         }
     }
 

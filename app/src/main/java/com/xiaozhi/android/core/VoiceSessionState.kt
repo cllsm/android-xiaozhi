@@ -52,6 +52,22 @@ object VoiceSessionState {
         )
     }
 
+    fun updateRecovery(
+        waitingForNetwork: Boolean? = null,
+        autoRecoveryEnabled: Boolean? = null,
+        recoveryAttempt: Int? = null,
+        recoveryLimit: Int? = null
+    ) {
+        val current = stateFlow.value
+        val newState = current.copy(
+            waitingForNetwork = waitingForNetwork ?: current.waitingForNetwork,
+            autoRecoveryEnabled = autoRecoveryEnabled ?: current.autoRecoveryEnabled,
+            recoveryAttempt = (recoveryAttempt ?: current.recoveryAttempt).coerceAtLeast(0),
+            recoveryLimit = (recoveryLimit ?: current.recoveryLimit).coerceAtLeast(0)
+        )
+        if (newState != current) stateFlow.value = newState
+    }
+
     fun updateConversation(
         currentText: String? = null,
         emotion: String? = null

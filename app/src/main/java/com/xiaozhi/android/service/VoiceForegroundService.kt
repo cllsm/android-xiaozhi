@@ -8,6 +8,9 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.app.PendingIntent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -17,6 +20,7 @@ import com.xiaozhi.android.MainActivity
 import com.xiaozhi.android.audio.AudioInputEngine
 import com.xiaozhi.android.audio.AudioOutputEngine
 import com.xiaozhi.android.core.ConnectionStatus
+import com.xiaozhi.android.core.ConnectionRecoveryPolicy
 import com.xiaozhi.android.core.DeviceState
 import com.xiaozhi.android.core.SettingsState
 import com.xiaozhi.android.core.VoiceSessionState
@@ -42,6 +46,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import java.net.NetworkInterface
@@ -53,6 +58,8 @@ class VoiceForegroundService : LifecycleService() {
     private var wakeLock: PowerManager.WakeLock? = null
     private val active = AtomicBoolean(false)
     private var connectionJob: kotlinx.coroutines.Job? = null
+    private val recoveryRequests = Channel<RecoveryTrigger>(Channel.CONFLATED)
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private lateinit var settingsRepository: SettingsRepository
     private lateinit var identityRepository: DeviceIdentityRepository
     private val otaClient = OtaClient()
@@ -65,6 +72,7 @@ class VoiceForegroundService : LifecycleService() {
         settingsRepository = SettingsRepository(this)
         identityRepository = DeviceIdentityRepository(this)
         createChannel()
+        registerNetworkRecoveryListener()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val serviceTypes = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
                 if (checkSelfPermission(android.Manifest.permission.CAMERA) ==
@@ -86,6 +94,9 @@ class VoiceForegroundService : LifecycleService() {
         if (intent?.action == ACTION_STOP) {
             stopVoiceService()
             return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_RECONNECT_NOW) {
+            requestRecovery(RecoveryTrigger.MANUAL)
         }
         if (intent?.action == ACTION_SET_WAKE_WORD) {
             val enabled = intent.getBooleanExtra(EXTRA_WAKE_WORD_ENABLED, true)
@@ -119,6 +130,7 @@ class VoiceForegroundService : LifecycleService() {
         conversationCommands.clear()
         connectionJob?.cancel()
         connectionJob = null
+        unregisterNetworkRecoveryListener()
         wakeLock?.let { lock ->
             if (lock.isHeld) lock.release()
         }
@@ -132,6 +144,12 @@ class VoiceForegroundService : LifecycleService() {
     private fun startConnectionLoop() {
         connectionJob = lifecycleScope.launch {
             var identity = identityRepository.ensureIdentity()
+            VoiceSessionState.updateRecovery(
+                waitingForNetwork = false,
+                autoRecoveryEnabled = true,
+                recoveryAttempt = 0,
+                recoveryLimit = 0
+            )
             VoiceSessionState.update(
                 status = ConnectionStatus.Connecting,
                 statusText = "正在获取连接配置",
@@ -143,9 +161,88 @@ class VoiceForegroundService : LifecycleService() {
             var reconnectDelay = INITIAL_RECONNECT_DELAY_MS
             var consecutiveFailures = 0
 
+            suspend fun waitForRecovery(timeoutMillis: Long? = reconnectDelay): RecoveryTrigger {
+                val trigger = timeoutMillis?.let { timeout ->
+                    withTimeoutOrNull(timeout) { recoveryRequests.receive() }
+                } ?: recoveryRequests.receive()
+                return trigger ?: RecoveryTrigger.TIMER
+            }
+
+            suspend fun recoverAfterFailure(
+                reason: String,
+                retrySettings: SettingsState
+            ) {
+                consecutiveFailures += 1
+                val retryLimit = ConnectionRecoveryPolicy.normalizeRetryLimit(
+                    retrySettings.connectRetryCount
+                )
+                val rapidRetry = retrySettings.connectRetryEnabled &&
+                    consecutiveFailures < retryLimit
+                val delayMillis = when {
+                    !retrySettings.connectRetryEnabled -> null
+                    rapidRetry -> reconnectDelay
+                    else -> MAX_RECONNECT_DELAY_MS
+                }
+                val message = ConnectionRecoveryPolicy.recoveryMessage(
+                    reason = reason,
+                    attempt = consecutiveFailures,
+                    retryLimit = retryLimit,
+                    autoRetryEnabled = retrySettings.connectRetryEnabled,
+                    nextDelayMillis = delayMillis
+                )
+                VoiceSessionState.update(
+                    status = ConnectionStatus.Error,
+                    statusText = message
+                )
+                VoiceSessionState.updateRecovery(
+                    waitingForNetwork = false,
+                    autoRecoveryEnabled = retrySettings.connectRetryEnabled,
+                    recoveryAttempt = consecutiveFailures,
+                    recoveryLimit = retryLimit
+                )
+                updateNotification(message)
+
+                val trigger = waitForRecovery(delayMillis)
+                if (trigger == RecoveryTrigger.MANUAL || trigger == RecoveryTrigger.NETWORK) {
+                    consecutiveFailures = 0
+                    reconnectDelay = INITIAL_RECONNECT_DELAY_MS
+                } else {
+                    reconnectDelay = ConnectionRecoveryPolicy.nextDelay(
+                        reconnectDelay,
+                        MAX_RECONNECT_DELAY_MS
+                    )
+                }
+            }
+
             while (isActive && active.get()) {
                 try {
+                    if (!isNetworkAvailable()) {
+                        consecutiveFailures = 0
+                        reconnectDelay = INITIAL_RECONNECT_DELAY_MS
+                        val waitingMessage = ConnectionRecoveryPolicy.waitingForNetworkMessage()
+                        VoiceSessionState.update(
+                            status = ConnectionStatus.Error,
+                            statusText = waitingMessage
+                        )
+                        VoiceSessionState.updateRecovery(
+                            waitingForNetwork = true,
+                            autoRecoveryEnabled = true,
+                            recoveryAttempt = 0
+                        )
+                        updateNotification(waitingMessage)
+                        waitForRecovery(NETWORK_RECOVERY_POLL_MS)
+                        continue
+                    }
+
                     val settings = settingsRepository.settings.first()
+                    VoiceSessionState.updateRecovery(
+                        waitingForNetwork = false,
+                        autoRecoveryEnabled = settings.connectRetryEnabled,
+                        recoveryAttempt = 0,
+                        recoveryLimit = ConnectionRecoveryPolicy.normalizeRetryLimit(
+                            settings.connectRetryCount
+                        )
+                    )
                     val config = otaClient.fetch(
                         settings = settings,
                         identity = identity,
@@ -198,20 +295,7 @@ class VoiceForegroundService : LifecycleService() {
                         deviceState = DeviceState.Connecting
                     )
                     if (config.websocketUrl.isBlank() || config.websocketToken.isBlank()) {
-                        consecutiveFailures += 1
-                        VoiceSessionState.update(
-                            status = ConnectionStatus.Error,
-                            statusText = "OTA 未返回完整 WebSocket 配置"
-                        )
-                        if (!settings.connectRetryEnabled ||
-                            consecutiveFailures >= settings.connectRetryCount
-                        ) {
-                            active.set(false)
-                            stopSelf()
-                            break
-                        }
-                        delay(reconnectDelay)
-                        reconnectDelay = (reconnectDelay * 2).coerceAtMost(MAX_RECONNECT_DELAY_MS)
+                        recoverAfterFailure("OTA 未返回完整 WebSocket 配置", settings)
                         continue
                     }
                     settingsRepository.update(
@@ -224,38 +308,29 @@ class VoiceForegroundService : LifecycleService() {
                     if (connected) {
                         reconnectDelay = INITIAL_RECONNECT_DELAY_MS
                         consecutiveFailures = 0
+                        VoiceSessionState.updateRecovery(
+                            waitingForNetwork = false,
+                            autoRecoveryEnabled = settings.connectRetryEnabled,
+                            recoveryAttempt = 0,
+                            recoveryLimit = ConnectionRecoveryPolicy.normalizeRetryLimit(
+                                settings.connectRetryCount
+                            )
+                        )
                     } else {
-                        consecutiveFailures += 1
-                        if (!settings.connectRetryEnabled ||
-                            consecutiveFailures >= settings.connectRetryCount
-                        ) {
-                            active.set(false)
-                            stopSelf()
-                            break
-                        }
+                        recoverAfterFailure(
+                            VoiceSessionState.state.value.statusText,
+                            settings
+                        )
+                        continue
                     }
-                    if (!isActive || !active.get()) break
-                    delay(reconnectDelay)
-                    reconnectDelay = (reconnectDelay * 2).coerceAtMost(MAX_RECONNECT_DELAY_MS)
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
-                    VoiceSessionState.update(
-                        status = ConnectionStatus.Error,
-                        statusText = UserErrorMessages.from(error.message ?: "网络连接失败")
-                    )
-                    updateNotification(VoiceSessionState.state.value.statusText)
                     val retrySettings = settingsRepository.settings.first()
-                    consecutiveFailures += 1
-                    if (!retrySettings.connectRetryEnabled ||
-                        consecutiveFailures >= retrySettings.connectRetryCount
-                    ) {
-                        active.set(false)
-                        stopSelf()
-                        break
-                    }
-                    delay(reconnectDelay)
-                    reconnectDelay = (reconnectDelay * 2).coerceAtMost(MAX_RECONNECT_DELAY_MS)
+                    recoverAfterFailure(
+                        UserErrorMessages.from(error.message ?: "网络连接失败"),
+                        retrySettings
+                    )
                 }
             }
         }
@@ -655,6 +730,48 @@ class VoiceForegroundService : LifecycleService() {
         activeWebSocket.compareAndSet(socket, null)
     }
 
+    private fun requestRecovery(trigger: RecoveryTrigger) {
+        recoveryRequests.trySend(trigger)
+        if (trigger == RecoveryTrigger.MANUAL && active.get()) {
+            if (VoiceSessionState.state.value.status == ConnectionStatus.Error) {
+                activeWebSocket.get()?.close()
+            }
+            VoiceSessionState.update(
+                status = ConnectionStatus.Connecting,
+                statusText = "正在重新连接小智服务"
+            )
+            updateNotification(VoiceSessionState.state.value.statusText)
+        }
+        if (active.get() && connectionJob == null) {
+            startConnectionLoop()
+        }
+    }
+
+    private fun registerNetworkRecoveryListener() {
+        val manager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                recoveryRequests.trySend(RecoveryTrigger.NETWORK)
+            }
+        }
+        networkCallback = callback
+        runCatching { manager.registerDefaultNetworkCallback(callback) }
+    }
+
+    private fun unregisterNetworkRecoveryListener() {
+        val callback = networkCallback ?: return
+        val manager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        runCatching { manager.unregisterNetworkCallback(callback) }
+        networkCallback = null
+    }
+
+    private fun isNetworkAvailable(): Boolean {
+        val manager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = manager.activeNetwork ?: return false
+        val capabilities = manager.getNetworkCapabilities(network) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
     private fun drainPendingTexts(socket: XiaozhiWebSocketClient) {
         while (true) {
             val text = pendingTexts.poll() ?: break
@@ -676,6 +793,12 @@ class VoiceForegroundService : LifecycleService() {
             status = ConnectionStatus.Disconnected,
             statusText = "服务已停止",
             activationCode = ""
+        )
+        VoiceSessionState.updateRecovery(
+            waitingForNetwork = false,
+            autoRecoveryEnabled = true,
+            recoveryAttempt = 0,
+            recoveryLimit = 0
         )
         stopSelf()
     }
@@ -728,6 +851,12 @@ class VoiceForegroundService : LifecycleService() {
             Intent(this, VoiceForegroundService::class.java).setAction(ACTION_STOP),
             immutableFlag
         )
+        val reconnectIntent = PendingIntent.getService(
+            this,
+            3,
+            Intent(this, VoiceForegroundService::class.java).setAction(ACTION_RECONNECT_NOW),
+            immutableFlag
+        )
         return builder
             .setContentTitle("小智语音服务")
             .setContentText(text)
@@ -743,6 +872,11 @@ class VoiceForegroundService : LifecycleService() {
                 android.R.drawable.ic_delete,
                 "停止服务",
                 stopIntent
+            )
+            .addAction(
+                android.R.drawable.ic_popup_sync,
+                "立即重连",
+                reconnectIntent
             )
             .build()
     }
@@ -783,6 +917,12 @@ class VoiceForegroundService : LifecycleService() {
         }
     }
 
+    private enum class RecoveryTrigger {
+        MANUAL,
+        NETWORK,
+        TIMER
+    }
+
     companion object {
         private val applicationContextHolder = AtomicReference<Context?>(null)
         private val activeWebSocket = AtomicReference<XiaozhiWebSocketClient?>(null)
@@ -804,12 +944,15 @@ class VoiceForegroundService : LifecycleService() {
             "com.xiaozhi.android.action.STOP_LISTENING"
         private const val ACTION_RELOAD_WAKE_WORD =
             "com.xiaozhi.android.action.RELOAD_WAKE_WORD"
+        private const val ACTION_RECONNECT_NOW =
+            "com.xiaozhi.android.action.RECONNECT_NOW"
         private const val COMMAND_START_LISTENING = "start"
         private const val COMMAND_STOP_LISTENING = "stop"
         private const val COMMAND_RELOAD_WAKE_WORD = "reload_wake_word"
         private const val HELLO_TIMEOUT_MS = 10_000L
         private const val INITIAL_RECONNECT_DELAY_MS = 2_000L
         private const val MAX_RECONNECT_DELAY_MS = 30_000L
+        private const val NETWORK_RECOVERY_POLL_MS = 3_000L
         private const val ACTIVATION_RETRY_DELAY_MS = 15_000L
         private const val WAKE_MODE_POLL_MS = 200L
         private const val LISTENING_MODE_AUTO = "auto"
@@ -820,11 +963,24 @@ class VoiceForegroundService : LifecycleService() {
             context.startForegroundService(Intent(context, VoiceForegroundService::class.java))
         }
 
+        fun reconnectNow(context: Context) {
+            context.startForegroundService(
+                Intent(context, VoiceForegroundService::class.java)
+                    .setAction(ACTION_RECONNECT_NOW)
+            )
+        }
+
         fun stop(context: Context) {
             VoiceSessionState.update(
                 status = ConnectionStatus.Disconnected,
                 statusText = "服务已停止",
                 activationCode = ""
+            )
+            VoiceSessionState.updateRecovery(
+                waitingForNetwork = false,
+                autoRecoveryEnabled = true,
+                recoveryAttempt = 0,
+                recoveryLimit = 0
             )
             context.stopService(Intent(context, VoiceForegroundService::class.java))
         }

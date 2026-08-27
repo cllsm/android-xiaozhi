@@ -20,6 +20,7 @@ import android.os.HandlerThread
 import android.os.SystemClock
 import android.view.Surface
 import android.util.Size
+import com.xiaozhi.android.study.StudyCameraFacing
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -28,7 +29,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 data class StudyPreviewInfo(
     val width: Int,
     val height: Int,
-    val rotationDegrees: Int
+    val rotationDegrees: Int,
+    val lensFacing: Int,
+    val mirror: Boolean
 )
 
 /**
@@ -36,7 +39,10 @@ data class StudyPreviewInfo(
  * captured on demand, so no video is recorded and no buffer is kept after JPEG
  * conversion.
  */
-class StudyObservationController(private val context: Context) {
+class StudyObservationController(
+    private val context: Context,
+    private val preferredFacing: StudyCameraFacing = StudyCameraFacing.Back
+) {
     private val closed = AtomicBoolean(false)
     private val ready = AtomicBoolean(false)
     private var handlerThread: HandlerThread? = null
@@ -45,8 +51,10 @@ class StudyObservationController(private val context: Context) {
     private var camera: CameraDevice? = null
     private var session: CameraCaptureSession? = null
     private var sensorOrientation = 0
+    private var lensFacing = CameraCharacteristics.LENS_FACING_BACK
     private var characteristics: CameraCharacteristics? = null
     private var previewSurface: Surface? = null
+    private var previewSurfaceTexture: SurfaceTexture? = null
     private var previewSize: Size? = null
     private val stateLock = Any()
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -64,9 +72,15 @@ class StudyObservationController(private val context: Context) {
         }
 
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        val selectedCameraId = selectCamera(manager) ?: return false
+        val wantedFacing = when (preferredFacing) {
+            StudyCameraFacing.Back -> CameraCharacteristics.LENS_FACING_BACK
+            StudyCameraFacing.Front -> CameraCharacteristics.LENS_FACING_FRONT
+        }
+        val selectedCameraId = selectCamera(manager, wantedFacing) ?: return false
         val selectedCharacteristics = manager.getCameraCharacteristics(selectedCameraId)
         characteristics = selectedCharacteristics
+        lensFacing = selectedCharacteristics.get(CameraCharacteristics.LENS_FACING)
+            ?: CameraCharacteristics.LENS_FACING_BACK
         sensorOrientation = selectedCharacteristics.get(
             CameraCharacteristics.SENSOR_ORIENTATION
         ) ?: 0
@@ -152,6 +166,7 @@ class StudyObservationController(private val context: Context) {
         surfaceTexture: SurfaceTexture,
         viewWidth: Int,
         viewHeight: Int,
+        displayRotation: Int,
         onResult: (StudyPreviewInfo?) -> Unit
     ) {
         if (!isReady || viewWidth <= 0 || viewHeight <= 0) {
@@ -169,12 +184,18 @@ class StudyObservationController(private val context: Context) {
                 return@post
             }
 
-            val size = selectPreviewSize(viewWidth, viewHeight)
+            val size = selectPreviewSize(
+                viewWidth,
+                viewHeight,
+                sensorOrientation,
+                displayRotation * 90
+            )
             runCatching {
                 surfaceTexture.setDefaultBufferSize(size.width, size.height)
             }
             val surface = Surface(surfaceTexture)
             previewSurface = surface
+            previewSurfaceTexture = surfaceTexture
             val activeCamera = camera
             val readerSurface = reader?.surface
             if (activeCamera == null || readerSurface == null) {
@@ -203,7 +224,14 @@ class StudyObservationController(private val context: Context) {
                                 previewSize = size
                                 onResultOnUiThread(
                                     onResult,
-                                    StudyPreviewInfo(size.width, size.height, sensorOrientation)
+                                    StudyPreviewInfo(
+                                        width = size.width,
+                                        height = size.height,
+                                        rotationDegrees = sensorOrientation,
+                                        lensFacing = lensFacing,
+                                        mirror = lensFacing ==
+                                            CameraCharacteristics.LENS_FACING_FRONT
+                                    )
                                 )
                             } else {
                                 previewSurface = null
@@ -227,12 +255,14 @@ class StudyObservationController(private val context: Context) {
         }
     }
 
-    fun detachPreview(surface: Surface) {
+    fun detachPreview(surfaceTexture: SurfaceTexture) {
         val cameraHandler = handler ?: return
         cameraHandler.post {
-            if (previewSurface !== surface) return@post
+            val previewTexture = previewSurfaceTexture
+            if (previewTexture !== surfaceTexture) return@post
             previewSurface = null
             previewSize = null
+            previewSurfaceTexture = null
             if (closed.get() || !ready.get()) return@post
 
             runCatching { session?.stopRepeating() }
@@ -339,10 +369,10 @@ class StudyObservationController(private val context: Context) {
         if (camera === device) camera = null
     }
 
-    private fun selectCamera(manager: CameraManager): String? {
+    private fun selectCamera(manager: CameraManager, wantedFacing: Int): String? {
         return manager.cameraIdList.firstOrNull { id ->
             manager.getCameraCharacteristics(id)
-                .get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
+                .get(CameraCharacteristics.LENS_FACING) == wantedFacing
         } ?: manager.cameraIdList.firstOrNull()
     }
 
@@ -357,12 +387,25 @@ class StudyObservationController(private val context: Context) {
         return target?.let { Pair(it.width, it.height) } ?: Pair(1280, 720)
     }
 
-    private fun selectPreviewSize(viewWidth: Int, viewHeight: Int): Size {
+    private fun selectPreviewSize(
+        viewWidth: Int,
+        viewHeight: Int,
+        sensorOrientationDegrees: Int,
+        displayRotationDegrees: Int
+    ): Size {
         val activeCharacteristics = characteristics
         val sizes = activeCharacteristics?.get(
             CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP
         )?.getOutputSizes(Surface::class.java).orEmpty()
-        val targetAspect = viewWidth.toDouble() / viewHeight.toDouble()
+        // Sensor buffers are rotated before display. Match the aspect after that
+        // rotation so center-crop does not throw away a disproportionate frame.
+        val displayRotation = ((sensorOrientationDegrees - displayRotationDegrees) %
+            360 + 360) % 360
+        val targetAspect = if (displayRotation % 180 == 90) {
+            viewHeight.toDouble() / viewWidth.toDouble()
+        } else {
+            viewWidth.toDouble() / viewHeight.toDouble()
+        }
         return sizes
             .filter { maxOf(it.width, it.height) <= MAX_PREVIEW_DIMENSION }
             .minByOrNull { size ->

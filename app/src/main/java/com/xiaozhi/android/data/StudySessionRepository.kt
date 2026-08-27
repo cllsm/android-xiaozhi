@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.xiaozhi.android.study.AnswerPolicy
 import com.xiaozhi.android.study.StudyMode
+import com.xiaozhi.android.study.StudyCameraFacing
 import com.xiaozhi.android.study.StudySessionRecord
 import com.xiaozhi.android.study.StudySettings
 import java.io.IOException
@@ -36,7 +37,11 @@ class StudySessionRepository(private val context: Context) {
                 focusMinutes = prefs[Keys.FocusMinutes] ?: 20,
                 breakMinutes = prefs[Keys.BreakMinutes] ?: 5,
                 observationEnabled = prefs[Keys.ObservationEnabled] ?: true,
-                observationIntervalSeconds = prefs[Keys.ObservationIntervalSeconds] ?: 5
+                observationIntervalSeconds = prefs[Keys.ObservationIntervalSeconds] ?: 10,
+                cameraFacing = when (prefs[Keys.CameraFacing]) {
+                    "front" -> StudyCameraFacing.Front
+                    else -> StudyCameraFacing.Back
+                }
             )
         }
 
@@ -58,6 +63,10 @@ class StudySessionRepository(private val context: Context) {
             prefs[Keys.ObservationEnabled] = settings.observationEnabled
             prefs[Keys.ObservationIntervalSeconds] = settings.observationIntervalSeconds
                 .coerceIn(3, 30)
+            prefs[Keys.CameraFacing] = when (settings.cameraFacing) {
+                StudyCameraFacing.Back -> "back"
+                StudyCameraFacing.Front -> "front"
+            }
         }
     }
 
@@ -123,6 +132,7 @@ class StudySessionRepository(private val context: Context) {
         val BreakMinutes = intPreferencesKey("break_minutes")
         val ObservationEnabled = booleanPreferencesKey("observation_enabled")
         val ObservationIntervalSeconds = intPreferencesKey("observation_interval_seconds")
+        val CameraFacing = stringPreferencesKey("camera_facing")
         val Records = stringPreferencesKey("records")
     }
 

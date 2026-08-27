@@ -13,6 +13,11 @@ enum class StudyPhase {
     Summary
 }
 
+enum class StudyCameraFacing {
+    Back,
+    Front
+}
+
 enum class AnswerPolicy {
     GuidanceOnly,
     GuidanceThenAnswer
@@ -24,7 +29,8 @@ data class StudySettings(
     val focusMinutes: Int = 20,
     val breakMinutes: Int = 5,
     val observationEnabled: Boolean = true,
-    val observationIntervalSeconds: Int = 5
+    val observationIntervalSeconds: Int = 10,
+    val cameraFacing: StudyCameraFacing = StudyCameraFacing.Back
 ) {
     val focusSeconds: Int get() = focusMinutes * 60
     val breakSeconds: Int get() = breakMinutes * 60
@@ -92,7 +98,11 @@ data class StudyRuntimeState(
     val observationRunning: Boolean = false,
     val observationFrames: Int = 0,
     val lastObservationAt: Long = 0L,
+    val lastObservationAttemptAt: Long = 0L,
     val lastObservationTrigger: String = "",
+    val observationIssue: String = "",
+    val lastCaptureFailure: String = "",
+    val consecutiveCaptureFailures: Int = 0,
     val statusMessage: String = "",
     val homeworkPage: HomeworkPageState? = null,
     val readingPage: ReadingPageState? = null

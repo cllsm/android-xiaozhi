@@ -5,6 +5,7 @@ import android.graphics.SurfaceTexture
 import android.view.Surface
 import com.xiaozhi.android.media.StudyPreviewInfo
 import com.xiaozhi.android.media.StudyObservationController
+import com.xiaozhi.android.study.StudyCameraFacing
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -26,16 +27,19 @@ object StudyObservationEngine {
 
     val isRunning: Boolean get() = running.get()
 
-    fun start(context: Context) {
+    fun start(context: Context, preferredFacing: StudyCameraFacing = StudyCameraFacing.Back) {
         if (running.get() || !starting.compareAndSet(false, true)) return
 
         scope.launch {
             try {
-                val newController = StudyObservationController(context.applicationContext)
+                val newController = StudyObservationController(
+                    context.applicationContext,
+                    preferredFacing
+                )
                 val started = withContext(Dispatchers.IO) { newController.start() }
                 if (!started) {
                     StudySessionState.setObservationRunning(false)
-                    StudySessionState.setStatusMessage("固定机位相机启动失败，请检查相机权限或被占用")
+                    StudySessionState.setObservationIssue("相机暂时不可用，语音和文字陪学仍可用")
                     withContext(Dispatchers.IO) { newController.close() }
                     return@launch
                 }
@@ -43,6 +47,7 @@ object StudyObservationEngine {
                 controller = newController
                 running.set(true)
                 StudySessionState.setObservationRunning(true)
+                StudySessionState.setObservationIssue(null)
                 StudySessionState.setStatusMessage("固定机位观察已开启")
 
                 while (isActive && running.get()) {
@@ -53,19 +58,26 @@ object StudyObservationEngine {
                         break
                     }
 
-                    val speechFrame = speechRequested.getAndSet(false)
+                    val requestedSpeechFrame = speechRequested.get()
                     val interval = state.settings.observationIntervalSeconds
                         .coerceIn(MIN_INTERVAL_SECONDS, MAX_INTERVAL_SECONDS) * 1_000L
                     val autoDue = System.currentTimeMillis() -
-                        state.lastObservationAt >= interval
-                    if ((speechFrame || autoDue) && processing.compareAndSet(false, true)) {
+                        state.lastObservationAttemptAt >= interval
+                    val observationDue = state.phase == StudyPhase.Active &&
+                        (requestedSpeechFrame || autoDue)
+                    if (observationDue && processing.compareAndSet(false, true)) {
                         try {
+                            val speechFrame = speechRequested.getAndSet(false)
                             val frame = withContext(Dispatchers.IO) { captureFrame() }
-                            if (frame != null) {
+                            if (frame == null) {
+                                StudySessionState.recordObservationFailure(
+                                    "相机取帧失败，已保留本次陪学"
+                                )
+                            } else {
                                 StudySessionState.recordObservationFrame(
                                     if (speechFrame) TRIGGER_SPEECH else TRIGGER_AUTO
                                 )
-                                when (state.mode) {
+                                val result = when (state.mode) {
                                     StudyMode.Homework -> StudySessionManager.captureHomeworkPage(
                                         intent = HomeworkPromptBuilder.INTENT_REFRESH,
                                         image = frame
@@ -73,7 +85,10 @@ object StudyObservationEngine {
                                     StudyMode.Reading -> StudySessionManager.captureReadingPage(
                                         image = frame
                                     )
-                                    StudyMode.None -> Unit
+                                    StudyMode.None -> null
+                                }
+                                if (result?.success == false) {
+                                    StudySessionState.recordObservationFailure(result.message)
                                 }
                             }
                         } finally {
@@ -91,17 +106,43 @@ object StudyObservationEngine {
         if (running.get()) speechRequested.set(true)
     }
 
+    fun switchCamera(context: Context, preferredFacing: StudyCameraFacing) {
+        if (!running.get()) {
+            start(context, preferredFacing)
+            return
+        }
+
+        running.set(false)
+        speechRequested.set(false)
+        StudySessionState.setObservationRunning(false)
+        StudySessionState.setStatusMessage("正在切换摄像头...")
+        val activeController = controller
+        controller = null
+        scope.launch {
+            withContext(Dispatchers.IO) { activeController?.close() }
+            // The active observation coroutine may still be unwinding. Wait for
+            // its startup guard before attempting the replacement camera.
+            var attempts = 0
+            while (starting.get() && attempts < SWITCH_START_TIMEOUT_MS / SWITCH_POLL_MS) {
+                delay(SWITCH_POLL_MS)
+                attempts++
+            }
+            start(context, preferredFacing)
+        }
+    }
+
     fun attachPreview(
         surfaceTexture: SurfaceTexture,
         width: Int,
         height: Int,
+        displayRotation: Int,
         onResult: (StudyPreviewInfo?) -> Unit
     ) {
-        controller?.attachPreview(surfaceTexture, width, height, onResult)
+        controller?.attachPreview(surfaceTexture, width, height, displayRotation, onResult)
     }
 
-    fun detachPreview(surface: Surface) {
-        controller?.detachPreview(surface)
+    fun detachPreview(surfaceTexture: SurfaceTexture) {
+        controller?.detachPreview(surfaceTexture)
     }
 
     fun captureFrame(): ByteArray? {
@@ -134,6 +175,8 @@ object StudyObservationEngine {
     }
 
     private const val POLL_INTERVAL_MS = 250L
+    private const val SWITCH_POLL_MS = 25L
+    private const val SWITCH_START_TIMEOUT_MS = 2_000L
     private const val MIN_INTERVAL_SECONDS = 3
     private const val MAX_INTERVAL_SECONDS = 30
     private const val TRIGGER_AUTO = "auto"

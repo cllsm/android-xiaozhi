@@ -28,6 +28,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -94,6 +95,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -134,8 +136,10 @@ import com.xiaozhi.android.core.ConnectionStatus
 import com.xiaozhi.android.core.DeviceState
 import com.xiaozhi.android.core.SettingsState
 import com.xiaozhi.android.core.SettingsValidator
+import com.xiaozhi.android.core.ThemeMode
 import com.xiaozhi.android.core.UserErrorMessages
 import com.xiaozhi.android.core.VoiceRuntimeState
+import com.xiaozhi.android.core.WakeWordTestState
 import com.xiaozhi.android.data.RecentMusicRecord
 import com.xiaozhi.android.media.MusicSelectionPrompt
 import com.xiaozhi.android.media.MusicRuntimeState
@@ -165,12 +169,21 @@ private enum class DirectVisionAction {
     Camera
 }
 
+private const val DEVELOPER_UNLOCK_TAPS = 7
+
 @Composable
 fun XiaozhiApp(viewModel: XiaozhiViewModel = viewModel()) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val settingsReady by viewModel.settingsReady.collectAsStateWithLifecycle()
 
-    XiaozhiTheme(darkTheme = settings.darkTheme) {
+    val systemDarkTheme = isSystemInDarkTheme()
+    XiaozhiTheme(
+        darkTheme = when (settings.themeMode) {
+            ThemeMode.System -> systemDarkTheme
+            ThemeMode.Dark -> true
+            ThemeMode.Light -> false
+        }
+    ) {
         AppContent(viewModel, settingsReady)
     }
 }
@@ -190,6 +203,7 @@ private fun AppContent(
     val musicPlaybackState by viewModel.musicPlaybackState.collectAsStateWithLifecycle()
     val musicOperationMessage by viewModel.musicOperationMessage.collectAsStateWithLifecycle()
     val musicSelectionPrompt by viewModel.musicSelectionPrompt.collectAsStateWithLifecycle()
+    val wakeWordTest by viewModel.wakeWordTest.collectAsStateWithLifecycle()
     var showSplash by remember { mutableStateOf(true) }
 
     LaunchedEffect(Unit) {
@@ -254,6 +268,8 @@ private fun AppContent(
                         onImportChat = viewModel::importChat,
                         onExportCredential = viewModel::exportCredential,
                         onImportCredential = viewModel::importCredential,
+                        wakeWordTest = wakeWordTest,
+                        onStartWakeWordTest = viewModel::startWakeWordTest,
                         operationMessage = operationMessage,
                         onClearOperationMessage = viewModel::clearOperationMessage,
                         onOpenDiagnostics = { screen = Screen.Diagnostics },
@@ -352,6 +368,12 @@ private fun MusicSelectionDialog(
     onSelect: (Int) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val rememberSelectionHint = if (prompt.options.size > 1) {
+        "打开“记住歌曲版本选择”后，相同搜索会优先使用上次选择的版本。"
+    } else {
+        null
+    }
+
     var remainingMillis by remember(prompt.autoSelectAtMillis) {
         mutableStateOf(
             (prompt.autoSelectAtMillis - System.currentTimeMillis()).coerceAtLeast(0L)
@@ -382,6 +404,13 @@ private fun MusicSelectionDialog(
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary
                 )
+                rememberSelectionHint?.let { hint ->
+                    Text(
+                        text = hint,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 prompt.options.forEach { option ->
                     TextButton(
                         onClick = { onSelect(option.number) },
@@ -489,7 +518,7 @@ private fun HomeScreen(
         pendingTextNeedsCamera = false
     }
 
-    fun sendFromHome(text: String, needsCamera: Boolean = false) {
+    fun sendFromHome(text: String, needsCamera: Boolean = false): Boolean {
         val microphoneReady = context.checkSelfPermission(
             Manifest.permission.RECORD_AUDIO
         ) == android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -497,8 +526,7 @@ private fun HomeScreen(
             Manifest.permission.CAMERA
         ) == android.content.pm.PackageManager.PERMISSION_GRANTED
         if (microphoneReady && cameraReady) {
-            onSendText(text)
-            return
+            return onSendText(text)
         }
 
         pendingText = text
@@ -512,6 +540,7 @@ private fun HomeScreen(
                 }
             }.toTypedArray()
         )
+        return true
     }
 
     fun requestDirectVision(prompt: String, action: DirectVisionAction) {
@@ -561,7 +590,9 @@ private fun HomeScreen(
         pendingScreenPrompt = null
     }
 
-    val serviceRunning = startRequested || runtimeState.status != ConnectionStatus.Disconnected
+    val serviceRunning = VoiceForegroundService.isRunning() ||
+        startRequested ||
+        runtimeState.status != ConnectionStatus.Disconnected
     val showActivationDialog = runtimeState.activationCode.isNotBlank() &&
         runtimeState.activationCode != dismissedActivationCode
     val showError = runtimeState.status == ConnectionStatus.Error &&
@@ -585,6 +616,11 @@ private fun HomeScreen(
 
     fun startVoiceAction() {
         if (serviceRunning &&
+            runtimeState.status == ConnectionStatus.Error &&
+            !runtimeState.waitingForNetwork
+        ) {
+            VoiceForegroundService.reconnectNow(context)
+        } else if (serviceRunning &&
             runtimeState.status == ConnectionStatus.Connected &&
             runtimeState.deviceState == DeviceState.Idle
         ) {
@@ -784,6 +820,12 @@ private fun HomeScreen(
                     color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.weight(1f)
                 )
+                TextButton(
+                    onClick = { VoiceForegroundService.reconnectNow(context) },
+                    contentPadding = PaddingValues(horizontal = 8.dp)
+                ) {
+                    Text("立即重连")
+                }
                 Text(
                     text = "✕",
                     color = MaterialTheme.colorScheme.error,
@@ -857,9 +899,10 @@ private fun HomeScreen(
                         onSend = {
                             val text = textDraft.trim()
                             if (text.isNotEmpty()) {
-                                sendFromHome(text)
-                                textDraft = ""
-                                toolsExpanded = false
+                                if (sendFromHome(text)) {
+                                    textDraft = ""
+                                    toolsExpanded = false
+                                }
                             }
                         }
                     ),
@@ -920,9 +963,10 @@ private fun HomeScreen(
                         .clickable {
                             val text = textDraft.trim()
                             if (text.isNotEmpty()) {
-                                sendFromHome(text)
-                                textDraft = ""
-                                toolsExpanded = false
+                                if (sendFromHome(text)) {
+                                    textDraft = ""
+                                    toolsExpanded = false
+                                }
                             }
                         },
                     contentAlignment = Alignment.Center
@@ -1265,13 +1309,15 @@ private fun homeStatusLabel(
     serviceRunning: Boolean
 ): String {
     return when {
-        !serviceRunning -> "服务离线"
+        !serviceRunning -> "待启动"
         state.status == ConnectionStatus.ActivationRequired -> "待激活"
+        state.waitingForNetwork -> "等待网络恢复"
         state.status == ConnectionStatus.Connecting ||
             state.deviceState == DeviceState.Connecting -> "连接中"
         state.deviceState == DeviceState.Listening -> "正在聆听"
         state.deviceState == DeviceState.Speaking -> "正在回复"
-        state.status == ConnectionStatus.Error -> "连接失败"
+        state.status == ConnectionStatus.Error ->
+            if (state.autoRecoveryEnabled) "断开 · 自动恢复" else "断开 · 可手动重连"
         state.status == ConnectionStatus.Connected -> "已连接"
         else -> "服务运行中"
     }
@@ -1893,6 +1939,8 @@ private fun SettingsScreen(
     onImportChat: (android.net.Uri) -> Unit,
     onExportCredential: (Uri, String) -> Unit,
     onImportCredential: (Uri, String) -> Unit,
+    wakeWordTest: WakeWordTestState,
+    onStartWakeWordTest: (SettingsState) -> Unit,
     operationMessage: String?,
     onClearOperationMessage: () -> Unit,
     onOpenDiagnostics: () -> Unit,
@@ -1904,7 +1952,11 @@ private fun SettingsScreen(
     var saveToast by remember { mutableStateOf<String?>(null) }
     var showClearDialog by remember { mutableStateOf(false) }
     var showResetDialog by remember { mutableStateOf(false) }
+    var showHelpDialog by remember { mutableStateOf(false) }
     var settingsQuery by remember { mutableStateOf("") }
+    var developerUnlocked by remember { mutableStateOf(false) }
+    var versionTaps by remember { mutableStateOf(0) }
+    var pendingWakeTest by remember { mutableStateOf<SettingsState?>(null) }
     var pendingExportUri by remember { mutableStateOf<Uri?>(null) }
     var pendingImportUri by remember { mutableStateOf<Uri?>(null) }
     val validation = remember(draft) { SettingsValidator.validate(draft) }
@@ -1921,6 +1973,30 @@ private fun SettingsScreen(
     val importCredentialLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri -> pendingImportUri = uri }
+    val wakeTestPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val draftToTest = pendingWakeTest
+        pendingWakeTest = null
+        if (granted) {
+            onStartWakeWordTest(draftToTest ?: return@rememberLauncherForActivityResult)
+        } else {
+            saveToast = "未授权麦克风，无法测试唤醒词"
+        }
+    }
+
+    fun launchWakeWordTest() {
+        onUpdateSettings(draft)
+        saveToast = "设置已保存"
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            onStartWakeWordTest(draft)
+        } else {
+            pendingWakeTest = draft
+            wakeTestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
 
     LaunchedEffect(saveToast) {
         if (saveToast != null) {
@@ -2002,6 +2078,25 @@ private fun SettingsScreen(
                         ) {
                             draft = draft.copy(wakeWordSensitivity = it)
                         }
+                        SettingsHint("数值越高越容易唤醒，也越可能误唤醒；改完可以立即测试")
+                        OutlinedButton(
+                            onClick = ::launchWakeWordTest,
+                            enabled = validation.valid && !wakeWordTest.running,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                if (wakeWordTest.running) {
+                                    "测试中 · 剩余 ${wakeWordTest.remainingSeconds} 秒"
+                                } else {
+                                    "测试唤醒词"
+                                }
+                            )
+                        }
+                        if (wakeWordTest.message.isNotBlank()) {
+                            SettingsHint(
+                                "命中 ${wakeWordTest.hits} 次 · ${wakeWordTest.message}"
+                            )
+                        }
                     }
                 }
             }
@@ -2012,13 +2107,15 @@ private fun SettingsScreen(
                 SettingsLabel("主题模式")
                 SettingsRadioGroup(
                     options = listOf(
+                        SettingsOption("跟随系统", "system"),
                         SettingsOption("深色", "dark"),
                         SettingsOption("浅色", "light")
                     ),
-                    selected = if (draft.darkTheme) "dark" else "light"
+                    selected = draft.themeMode.name.lowercase()
                 ) { value ->
-                    val newValue = value == "dark"
-                    draft = draft.copy(darkTheme = newValue)
+                    val newValue = ThemeMode.values().firstOrNull { it.name.lowercase() == value }
+                        ?: ThemeMode.System
+                    draft = draft.copy(themeMode = newValue)
                     onUpdateSettings(draft)
                 }
             }
@@ -2101,6 +2198,13 @@ private fun SettingsScreen(
                 ) {
                     draft = draft.copy(connectRetryEnabled = it)
                 }
+                SwitchSettingRow(
+                    label = "记住歌曲版本选择",
+                    hint = "同一首歌下次搜索时优先使用你上次选择的版本",
+                    checked = draft.musicRememberSelection
+                ) {
+                    draft = draft.copy(musicRememberSelection = it)
+                }
             }
             }
 
@@ -2119,10 +2223,14 @@ private fun SettingsScreen(
             if (sectionVisible(
                     settingsQuery,
                     "诊断与隐私",
-                    "诊断 检测 权限 网络 日志 隐私 数据"
+                    "帮助 反馈 诊断 检测 权限 网络 日志 隐私 数据"
                 )
             ) {
                 SettingsSection("诊断与隐私") {
+                    SettingsActionRow(
+                        title = "帮助与反馈",
+                        hint = "常见问题、反馈入口和诊断报告说明"
+                    ) { showHelpDialog = true }
                     SettingsActionRow(
                         title = "运行诊断",
                         hint = "检查权限、网络、配置、链路和后台运行"
@@ -2136,7 +2244,28 @@ private fun SettingsScreen(
 
             if (sectionVisible(settingsQuery, "关于", "关于 版本 默认 恢复")) {
                 SettingsSection("关于") {
-                    SettingsValueRow("版本", BuildConfig.VERSION_NAME)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable {
+                                versionTaps += 1
+                                if (versionTaps >= DEVELOPER_UNLOCK_TAPS) {
+                                    developerUnlocked = true
+                                    saveToast = "开发者配置已解锁"
+                                }
+                            }
+                            .padding(horizontal = 4.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        SettingsLabel("版本")
+                        Spacer(modifier = Modifier.weight(1f))
+                        Text(
+                            text = BuildConfig.VERSION_NAME,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     SettingsActionRow(
                         title = "恢复默认设置",
                         hint = "重置唤醒词、音频、音乐和外观配置"
@@ -2146,11 +2275,15 @@ private fun SettingsScreen(
                 }
             }
 
-            SettingsSection("开发者配置") {
-                SettingsActionRow(
-                    title = "打开开发者配置",
-                    hint = "网络、音频和音乐源"
-                ) { onOpenDeveloper() }
+            if (developerUnlocked) {
+                SettingsSection("开发者配置") {
+                    SettingsActionRow(
+                        title = "打开开发者配置",
+                        hint = "网络、音频和音乐源；修改后请确认能恢复"
+                    ) { onOpenDeveloper() }
+                }
+            } else if (sectionVisible(settingsQuery, "关于", "关于 版本")) {
+                SettingsHint("连续点版本号 $DEVELOPER_UNLOCK_TAPS 次可解锁开发者配置")
             }
 
             Button(
@@ -2228,6 +2361,44 @@ private fun SettingsScreen(
                 },
                 dismissButton = {
                     TextButton(onClick = { showClearDialog = false }) { Text("取消") }
+                }
+            )
+        }
+
+        if (showHelpDialog) {
+            AlertDialog(
+                onDismissRequest = { showHelpDialog = false },
+                title = { Text("帮助与反馈") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("叫不醒：先在设置的唤醒词里点“测试唤醒词”，再按提示调高灵敏度。")
+                        Text("没声音或连接失败：运行诊断，并把诊断报告分享给反馈渠道。")
+                        Text("相机、屏幕识别、悬浮窗：首次使用对应功能时会再次申请，不需要重新安装。")
+                        Text("换机或重装：可先在设置里加密备份激活凭证和聊天记录。")
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            showHelpDialog = false
+                            val feedback = buildString {
+                                appendLine("小智 Android 反馈")
+                                appendLine("版本：${BuildConfig.VERSION_NAME}")
+                                appendLine("问题描述：")
+                            }
+                            context.startActivity(
+                                Intent.createChooser(
+                                    Intent(Intent.ACTION_SEND)
+                                        .setType("text/plain")
+                                        .putExtra(Intent.EXTRA_TEXT, feedback),
+                                    "分享反馈"
+                                )
+                            )
+                        }
+                    ) { Text("去反馈") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showHelpDialog = false }) { Text("知道了") }
                 }
             )
         }
@@ -2869,7 +3040,7 @@ private fun serverLabel(status: ConnectionStatus): String {
         ConnectionStatus.Connecting -> "连接中"
         ConnectionStatus.ActivationRequired -> "待激活"
         ConnectionStatus.Disconnected -> "待连接"
-        ConnectionStatus.Error -> "离线"
+        ConnectionStatus.Error -> "断开"
     }
 }
 

@@ -17,6 +17,12 @@ enum class ConnectionStatus {
     Error
 }
 
+enum class ThemeMode {
+    System,
+    Dark,
+    Light
+}
+
 data class DeviceIdentity(
     val deviceId: String,
     val clientId: String,
@@ -29,6 +35,10 @@ data class VoiceRuntimeState(
     val status: ConnectionStatus = ConnectionStatus.Disconnected,
     val statusText: String = "待启动",
     val deviceState: DeviceState = DeviceState.Idle,
+    val waitingForNetwork: Boolean = false,
+    val autoRecoveryEnabled: Boolean = true,
+    val recoveryAttempt: Int = 0,
+    val recoveryLimit: Int = 0,
     val wakeWordEnabled: Boolean = true,
     val activationCode: String = "",
     val deviceId: String = "",
@@ -65,7 +75,8 @@ data class SettingsState(
     val musicNeteaseLosslessAppKey: String = BuildConfig.NETEASE_LOSSLESS_APP_KEY,
     val musicNeteaseApiUrl: String = "",
     val musicDefaultQuality: String = "320k",
-    val darkTheme: Boolean = true,
+    val themeMode: ThemeMode = ThemeMode.System,
+    val musicRememberSelection: Boolean = true,
     val overlayEnabled: Boolean = false,
     val chatHistoryLimit: Int = 200,
     val connectRetryEnabled: Boolean = true,
@@ -79,6 +90,13 @@ data class SettingsValidationResult(
 ) {
     val valid: Boolean get() = errors.isEmpty()
 }
+
+data class WakeWordTestState(
+    val running: Boolean = false,
+    val remainingSeconds: Int = 0,
+    val hits: Int = 0,
+    val message: String = ""
+)
 
 data class DiagnosticItem(
     val name: String,

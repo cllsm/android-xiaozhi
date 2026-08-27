@@ -12,6 +12,8 @@ import com.xiaozhi.android.core.SettingsState
 import com.xiaozhi.android.core.UserErrorMessages
 import com.xiaozhi.android.core.VoiceRuntimeState
 import com.xiaozhi.android.core.VoiceSessionState
+import com.xiaozhi.android.core.WakeWordTestState
+import com.xiaozhi.android.audio.AudioInputEngine
 import com.xiaozhi.android.data.ChatHistoryRepository
 import com.xiaozhi.android.data.DeviceCredentialRepository
 import com.xiaozhi.android.data.DiagnosticRepository
@@ -26,11 +28,14 @@ import com.xiaozhi.android.mcp.ScreenVisionPromptBuilder
 import com.xiaozhi.android.mcp.VisionService
 import com.xiaozhi.android.service.MediaProjectionForegroundService
 import com.xiaozhi.android.service.VoiceForegroundService
+import com.xiaozhi.android.wake.SherpaWakeWordEngine
 import com.xiaozhi.android.data.StudySessionRepository
 import com.xiaozhi.android.study.ReadingPromptBuilder
 import com.xiaozhi.android.study.StudyCaptureResult
 import com.xiaozhi.android.study.StudyMode
+import com.xiaozhi.android.study.StudyObservationEngine
 import com.xiaozhi.android.study.StudySessionManager
+import com.xiaozhi.android.study.StudySessionRecord
 import com.xiaozhi.android.study.StudySessionState
 import com.xiaozhi.android.study.StudySettings
 import kotlinx.coroutines.Dispatchers
@@ -68,6 +73,11 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
     val musicPlaybackState = MusicPlaybackState.state
 
     val musicSelectionPrompt = NativeMusicController.selectionPrompt
+
+    private val wakeWordTestFlow = MutableStateFlow(WakeWordTestState())
+    val wakeWordTest: StateFlow<WakeWordTestState> = wakeWordTestFlow.asStateFlow()
+
+    private var wakeWordTestJob: kotlinx.coroutines.Job? = null
 
     val studyState = StudySessionState.state
     val studySettings = studySessionRepository.settings
@@ -122,6 +132,12 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
     fun completeOnboarding() {
         if (settingsFlow.value.onboardingCompleted) return
         updateSettings(settingsFlow.value.copy(onboardingCompleted = true))
+        if (chat.value.isEmpty()) {
+            VoiceSessionState.appendChat(
+                "你好，我是小智。可以先点下面的麦克风说话，也可以直接打字；相机、屏幕识别这些能力等到你第一次使用时再授权。",
+                fromUser = false
+            )
+        }
     }
 
     fun resetSettings() {
@@ -176,6 +192,80 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
         musicOperationMessageFlow.value = "最近播放已清空"
     }
 
+    fun startWakeWordTest(settings: SettingsState) {
+        if (wakeWordTestFlow.value.running) return
+        if (getApplication<Application>().checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            wakeWordTestFlow.value = WakeWordTestState(
+                message = "需要麦克风权限才能测试唤醒词"
+            )
+            return
+        }
+        if (VoiceForegroundService.isRunning()) {
+            wakeWordTestFlow.value = WakeWordTestState(
+                message = "语音服务正在使用麦克风，请先在对话页停止服务"
+            )
+            return
+        }
+
+        wakeWordTestJob?.cancel()
+        wakeWordTestFlow.value = WakeWordTestState(
+            running = true,
+            remainingSeconds = WAKE_WORD_TEST_SECONDS,
+            message = "请自然地说 3 遍：“${settings.wakeWordText}”"
+        )
+        wakeWordTestJob = viewModelScope.launch(Dispatchers.IO) {
+            var wakeEngine: SherpaWakeWordEngine? = null
+            var audioInput: AudioInputEngine? = null
+            try {
+                wakeEngine = SherpaWakeWordEngine(
+                    context = getApplication(),
+                    settings = settings,
+                    onDetected = { keyword ->
+                        val current = wakeWordTestFlow.value
+                        wakeWordTestFlow.value = current.copy(
+                            hits = current.hits + 1,
+                            message = "已命中：$keyword"
+                        )
+                    },
+                    onError = { message ->
+                        val current = wakeWordTestFlow.value
+                        wakeWordTestFlow.value = current.copy(
+                            message = "唤醒词错误：$message"
+                        )
+                    }
+                )
+                audioInput = AudioInputEngine(
+                    onPacket = {},
+                    onSamples = { samples -> wakeEngine?.process(samples) },
+                    initialSendingEnabled = false,
+                    aecEnabled = settings.aecEnabled
+                ).also { it.start() }
+
+                repeat(WAKE_WORD_TEST_SECONDS) {
+                    delay(1_000)
+                    val current = wakeWordTestFlow.value
+                    wakeWordTestFlow.value = current.copy(
+                        remainingSeconds = current.remainingSeconds - 1
+                    )
+                }
+            } finally {
+                audioInput?.stop()
+                wakeEngine?.close()
+                val current = wakeWordTestFlow.value
+                wakeWordTestFlow.value = current.copy(
+                    running = false,
+                    remainingSeconds = 0,
+                    message = when {
+                        current.hits > 0 -> "测试完成，命中 ${current.hits} 次，当前设置可用"
+                        else -> "测试完成但未命中。建议先调高灵敏度，再保持环境安静重试"
+                    }
+                )
+            }
+        }
+    }
+
     fun clearMusicOperationMessage() {
         musicOperationMessageFlow.value = null
     }
@@ -183,6 +273,10 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
     fun startStudy(mode: StudyMode) {
         val result = StudySessionManager.start(mode)
         VoiceSessionState.appendChat(result.message, fromUser = false)
+    }
+
+    fun confirmStudySetup(): Boolean {
+        return StudySessionManager.confirmCameraSetup()
     }
 
     fun captureHomeworkPage(intent: String, questionNumber: Int? = null) {
@@ -240,16 +334,26 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
         StudySessionManager.moveReadingSentence(delta)
     }
 
-    fun stopStudy() {
+    fun stopStudy(): StudySessionRecord? {
         val record = StudySessionManager.stop()
         VoiceSessionState.appendChat(
-            record?.let { "本次陪学已结束，报告已保存" } ?: "当前没有进行中的陪学会话",
+            record?.let {
+                "本次陪学结束。${StudySessionManager.friendlySummary(it)}"
+            } ?: "当前没有进行中的陪学会话",
             fromUser = false
         )
+        return record
     }
 
     fun updateStudySettings(settings: StudySettings) {
+        val previousSettings = StudySessionState.state.value.settings
         StudySessionManager.updateSettings(settings)
+        if (previousSettings.cameraFacing != settings.cameraFacing &&
+            settings.observationEnabled &&
+            StudySessionState.state.value.mode != StudyMode.None
+        ) {
+            StudyObservationEngine.switchCamera(getApplication(), settings.cameraFacing)
+        }
     }
 
     fun clearStudyRecords() {
@@ -646,6 +750,7 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
 
     private companion object {
         const val EXPORT_VERSION = 1
+        const val WAKE_WORD_TEST_SECONDS = 15
         const val MAX_IMPORT_BYTES = 2 * 1024 * 1024
         const val SERVICE_STOP_WAIT_MS = 300L
         const val VISION_CONFIG_TIMEOUT_MS = 8_000L

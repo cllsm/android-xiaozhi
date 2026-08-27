@@ -60,22 +60,55 @@ object StudySessionManager {
         }
 
         StudySessionState.prepare(mode)
-        StudySessionState.activate()
         val settings = StudySessionState.state.value.settings
+        if (settings.observationEnabled) {
+            StudySessionState.setStatusMessage("先固定手机，让孩子和学习资料同框")
+            VoiceSessionState.appendChat(
+                if (mode == StudyMode.Homework) {
+                    "先把手机固定好，让作业本和孩子都在画面里。确认后我们开始。"
+                } else {
+                    "先把手机固定好，让书页和孩子都在画面里。确认后我们开始。"
+                },
+                fromUser = false
+            )
+        } else {
+            StudySessionState.activate()
+            StudySessionState.setStatusMessage("语音陪学已开始")
+            VoiceSessionState.appendChat(
+                if (mode == StudyMode.Homework) {
+                    "已进入作业模式。可以让孩子说“看第几题”，或直接念出题目。"
+                } else {
+                    "已进入阅读模式。可以让孩子念出想读的句子。"
+                },
+                fromUser = false
+            )
+        }
+        appContext?.takeIf { settings.observationEnabled }?.let {
+            StudyObservationEngine.start(it, settings.cameraFacing)
+        }
+        startTimer()
+        return success(
+            if (settings.observationEnabled) "相机已打开，请完成摆位" else "陪学模式已启动"
+        )
+    }
+
+    fun confirmCameraSetup(): Boolean {
+        val state = StudySessionState.state.value
+        if (state.mode == StudyMode.None || state.phase != StudyPhase.Prepare) return false
+
+        StudySessionState.activate()
         StudySessionState.setStatusMessage(
-            if (mode == StudyMode.Homework) "已进入作业模式" else "已进入阅读模式"
+            if (state.mode == StudyMode.Homework) "作业陪学开始" else "阅读陪学开始"
         )
         VoiceSessionState.appendChat(
-            if (mode == StudyMode.Homework) {
-                "已进入作业模式。想看哪道题，把作业本放在摄像头前说“看第几题”。"
+            if (state.mode == StudyMode.Homework) {
+                "摆好了，我们开始。想看哪道题，可以说“看第几题”。"
             } else {
-                "已进入阅读模式。把书页放在摄像头前，点“拍书页”或说“看这一页”。"
+                "摆好了，我们开始。想读哪一句，先跟我说。"
             },
             fromUser = false
         )
-        appContext?.takeIf { settings.observationEnabled }?.let(StudyObservationEngine::start)
-        startTimer()
-        return success("陪学模式已启动")
+        return true
     }
 
     fun stop(): StudySessionRecord? {
@@ -86,12 +119,15 @@ object StudySessionManager {
         timerJob = null
         StudyObservationEngine.stop()
         val endedAt = System.currentTimeMillis()
+        val startedAt = state.startedAt.takeIf { it > 0 } ?: endedAt
+        val durationSeconds = ((endedAt - startedAt).coerceAtLeast(0L) / 1000L)
+            .toInt()
         val record = StudySessionRecord(
             id = endedAt,
             mode = state.mode,
-            startedAt = state.startedAt.takeIf { it > 0 } ?: endedAt,
+            startedAt = startedAt,
             endedAt = endedAt,
-            summary = buildSummary(state).toString()
+            summary = buildSummary(state, durationSeconds).toString()
         )
         scope.launch { repository?.addRecord(record) }
         StudySessionState.reset()
@@ -429,11 +465,16 @@ object StudySessionManager {
         }
     }
 
-    private fun buildSummary(state: StudyRuntimeState): JSONObject {
+    private fun buildSummary(
+        state: StudyRuntimeState,
+        durationSeconds: Int
+    ): JSONObject {
         val summary = JSONObject()
-            .put("duration_minutes", (
-                (System.currentTimeMillis() - state.startedAt).coerceAtLeast(0L) / 60_000L
-                ).toInt())
+            .put("duration_seconds", durationSeconds)
+            .put("duration_minutes", (durationSeconds + 59) / 60)
+            .put("observation_enabled", state.settings.observationEnabled)
+            .put("uploaded_frames", state.observationFrames)
+            .put("video_recorded", false)
         when (state.mode) {
             StudyMode.Homework -> {
                 summary.put(
@@ -462,6 +503,32 @@ object StudySessionManager {
 
     private fun failure(message: String): StudyCaptureResult {
         return StudyCaptureResult(false, message)
+    }
+
+    fun friendlySummary(record: StudySessionRecord): String {
+        val json = runCatching { JSONObject(record.summary) }.getOrNull()
+            ?: return record.summary
+        val seconds = json.optInt("duration_seconds").coerceAtLeast(0)
+        val duration = if (seconds >= 60) {
+            "${seconds / 60} 分钟"
+        } else {
+            "$seconds 秒"
+        }
+        val main = when (record.mode) {
+            StudyMode.Homework -> {
+                val items = json.optJSONArray("items") ?: JSONArray()
+                val finished = (0 until items.length()).count { index ->
+                    val state = items.optJSONObject(index)?.optString("state").orEmpty()
+                    state == "correct" || state == "corrected"
+                }
+                "完成 $finished/${items.length()} 道题"
+            }
+            StudyMode.Reading -> {
+                "通过 ${json.optInt("sentences_passed")}/${json.optInt("sentences_total")} 句"
+            }
+            StudyMode.None -> "陪学结束"
+        }
+        return "$main · 学习 $duration · 仅上传 ${json.optInt("uploaded_frames")} 帧，无视频"
     }
 
     fun shutdown() {

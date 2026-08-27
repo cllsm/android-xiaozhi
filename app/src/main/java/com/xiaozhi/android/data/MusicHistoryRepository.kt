@@ -27,10 +27,20 @@ data class RecentMusicRecord(
     val playCount: Int
 )
 
+data class MusicSelectionPreference(
+    val query: String,
+    val title: String,
+    val sourceId: String,
+    val sourceName: String,
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
 class MusicHistoryRepository private constructor(context: Context) {
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val recordsFlow = MutableStateFlow<List<RecentMusicRecord>>(emptyList())
+    @Volatile
+    private var selectionPreferences: Map<String, MusicSelectionPreference> = emptyMap()
     private var playbackQueue: List<String> = emptyList()
 
     val records: StateFlow<List<RecentMusicRecord>> = recordsFlow.asStateFlow()
@@ -56,17 +66,35 @@ class MusicHistoryRepository private constructor(context: Context) {
                 addAll(current.filter { it.title != title })
             }.take(MAX_RECORDS)
             recordsFlow.value = next
-            persist(next)
+            persist(next, selectionPreferences)
         }
     }
 
     fun clear() {
         scope.launch {
             recordsFlow.value = emptyList()
+            selectionPreferences = emptyMap()
             playbackQueue = emptyList()
-            persist(emptyList())
+            persist(emptyList(), emptyMap())
         }
     }
+
+    fun rememberSelection(preference: MusicSelectionPreference) {
+        if (preference.query.isBlank() || preference.title.isBlank()) return
+        val normalizedQuery = normalizeQuery(preference.query)
+        synchronized(selectionPreferences) {
+            if (selectionPreferences[normalizedQuery] == preference) return
+            val next = selectionPreferences + (normalizedQuery to preference)
+            selectionPreferences = next.entries
+                .sortedByDescending { it.value.updatedAt }
+                .take(MAX_SELECTION_PREFERENCES)
+                .associate { it.key to it.value }
+        }
+        scope.launch { persist(recordsFlow.value, selectionPreferences) }
+    }
+
+    fun selectionPreference(query: String): MusicSelectionPreference? =
+        selectionPreferences[normalizeQuery(query)]
 
     @Synchronized
     fun preparePlaybackQueue(currentTitle: String) {
@@ -101,30 +129,63 @@ class MusicHistoryRepository private constructor(context: Context) {
                 if (error !is IOException) throw error
             }
             .firstOrNull() ?: return
-        val raw = serialized[Keys.Records] ?: return
-        val restored = runCatching {
-            val source = JSONArray(raw)
-            buildList {
+        val raw = serialized[Keys.Records]
+        if (raw != null) {
+            val restored = runCatching {
+                val source = JSONArray(raw)
+                buildList {
+                    for (index in 0 until source.length()) {
+                        val item = source.optJSONObject(index) ?: continue
+                        val title = item.optString("title").trim()
+                        if (title.isNotBlank()) {
+                            add(
+                                RecentMusicRecord(
+                                    title = title,
+                                    sourceName = item.optString("source_name")
+                                        .ifBlank { "未知来源" },
+                                    playedAt = item.optLong("played_at"),
+                                    playCount = item.optInt("play_count", 1).coerceAtLeast(1)
+                                )
+                            )
+                        }
+                    }
+                }
+            }.getOrNull() ?: emptyList()
+            recordsFlow.value = restored.take(MAX_RECORDS)
+        }
+
+        selectionPreferences = runCatching {
+            val source = JSONArray(serialized[Keys.SelectionPreferences] ?: "[]")
+            buildMap {
                 for (index in 0 until source.length()) {
                     val item = source.optJSONObject(index) ?: continue
+                    val query = item.optString("query").trim()
                     val title = item.optString("title").trim()
-                    if (title.isNotBlank()) {
-                        add(
-                            RecentMusicRecord(
+                    if (query.isNotBlank() && title.isNotBlank()) {
+                        put(
+                            normalizeQuery(query),
+                            MusicSelectionPreference(
+                                query = query,
                                 title = title,
-                                sourceName = item.optString("source_name").ifBlank { "未知来源" },
-                                playedAt = item.optLong("played_at"),
-                                playCount = item.optInt("play_count", 1).coerceAtLeast(1)
+                                sourceId = item.optString("source_id"),
+                                sourceName = item.optString("source_name")
+                                    .ifBlank { "未知来源" },
+                                updatedAt = item.optLong(
+                                    "updated_at",
+                                    System.currentTimeMillis()
+                                )
                             )
                         )
                     }
                 }
             }
-        }.getOrNull() ?: emptyList()
-        recordsFlow.value = restored.take(MAX_RECORDS)
+        }.getOrNull() ?: emptyMap()
     }
 
-    private suspend fun persist(records: List<RecentMusicRecord>) {
+    private suspend fun persist(
+        records: List<RecentMusicRecord>,
+        preferences: Map<String, MusicSelectionPreference>
+    ) {
         val array = JSONArray()
         records.forEach { record ->
             array.put(
@@ -135,19 +196,35 @@ class MusicHistoryRepository private constructor(context: Context) {
                     .put("play_count", record.playCount)
             )
         }
+        val preferenceArray = JSONArray()
+        preferences.values.forEach { preference ->
+            preferenceArray.put(
+                JSONObject()
+                    .put("query", preference.query)
+                    .put("title", preference.title)
+                    .put("source_id", preference.sourceId)
+                    .put("source_name", preference.sourceName)
+                    .put("updated_at", System.currentTimeMillis())
+            )
+        }
         runCatching {
             appContext.musicHistoryStore.edit { prefs ->
                 prefs[Keys.Records] = array.toString()
+                prefs[Keys.SelectionPreferences] = preferenceArray.toString()
             }
         }
     }
 
+    private fun normalizeQuery(query: String) = query.trim().lowercase()
+
     private object Keys {
         val Records = stringPreferencesKey("records")
+        val SelectionPreferences = stringPreferencesKey("selection_preferences")
     }
 
     companion object {
         private const val MAX_RECORDS = 50
+        private const val MAX_SELECTION_PREFERENCES = 30
 
         @Volatile
         private var instance: MusicHistoryRepository? = null
@@ -173,5 +250,19 @@ class MusicHistoryRepository private constructor(context: Context) {
 
         fun isInPlaybackQueue(title: String): Boolean =
             instance?.isInPlaybackQueue(title) == true
+
+        fun rememberSelection(
+            query: String,
+            title: String,
+            sourceId: String,
+            sourceName: String
+        ) {
+            instance?.rememberSelection(
+                MusicSelectionPreference(query, title, sourceId, sourceName)
+            )
+        }
+
+        fun selectionPreference(query: String): MusicSelectionPreference? =
+            instance?.selectionPreference(query)
     }
 }
