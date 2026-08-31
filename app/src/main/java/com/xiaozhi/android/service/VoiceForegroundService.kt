@@ -184,15 +184,24 @@ class VoiceForegroundService : LifecycleService() {
                     else -> MAX_RECONNECT_DELAY_MS
                 }
                 val message = ConnectionRecoveryPolicy.recoveryMessage(
-                    reason = reason,
+                    reason = UserErrorMessages.from(reason),
                     attempt = consecutiveFailures,
                     retryLimit = retryLimit,
                     autoRetryEnabled = retrySettings.connectRetryEnabled,
                     nextDelayMillis = delayMillis
                 )
                 VoiceSessionState.update(
-                    status = ConnectionStatus.Error,
-                    statusText = message
+                    status = if (retrySettings.connectRetryEnabled) {
+                        ConnectionStatus.Connecting
+                    } else {
+                        ConnectionStatus.Error
+                    },
+                    statusText = message,
+                    deviceState = if (retrySettings.connectRetryEnabled) {
+                        DeviceState.Connecting
+                    } else {
+                        VoiceSessionState.state.value.deviceState
+                    }
                 )
                 VoiceSessionState.updateRecovery(
                     waitingForNetwork = false,
@@ -599,8 +608,9 @@ class VoiceForegroundService : LifecycleService() {
                     stopAudio()
                     if (active.get()) {
                         VoiceSessionState.update(
-                            status = ConnectionStatus.Error,
-                            statusText = message
+                            status = ConnectionStatus.Connecting,
+                            statusText = UserErrorMessages.from(message),
+                            deviceState = DeviceState.Connecting
                         )
                     }
                     hello.complete(false)
@@ -950,7 +960,7 @@ class VoiceForegroundService : LifecycleService() {
         private const val COMMAND_STOP_LISTENING = "stop"
         private const val COMMAND_RELOAD_WAKE_WORD = "reload_wake_word"
         private const val HELLO_TIMEOUT_MS = 10_000L
-        private const val INITIAL_RECONNECT_DELAY_MS = 2_000L
+        private const val INITIAL_RECONNECT_DELAY_MS = 500L
         private const val MAX_RECONNECT_DELAY_MS = 30_000L
         private const val NETWORK_RECOVERY_POLL_MS = 3_000L
         private const val ACTIVATION_RETRY_DELAY_MS = 15_000L

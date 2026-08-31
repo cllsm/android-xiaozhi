@@ -2211,8 +2211,15 @@ private fun SettingsScreen(
             if (sectionVisible(settingsQuery, "悬浮窗", "悬浮窗 快捷球 overlay 后台")) {
                 SettingsSection("悬浮窗") {
                 SwitchSettingRow(
-                    label = "启用悬浮窗",
-                    hint = "应用内快捷球；最小化后可在其他应用中聆听、打断或停止服务",
+                    label = "音乐灵动岛",
+                    hint = "播放或搜索歌曲时，在顶部显示播放状态",
+                    checked = draft.musicIslandEnabled
+                ) {
+                    draft = draft.copy(musicIslandEnabled = it)
+                }
+                SwitchSettingRow(
+                    label = "语音快捷球",
+                    hint = "最小化后可在其他应用中聆听、打断或停止服务",
                     checked = draft.overlayEnabled
                 ) {
                     draft = draft.copy(overlayEnabled = it)

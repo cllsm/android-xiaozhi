@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
-    private var overlayEnabled = false
+    private var overlayServiceEnabled = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -22,7 +22,7 @@ class MainActivity : ComponentActivity() {
         }
         lifecycleScope.launch {
             (applicationContext as XiaozhiApplication).settingsRepository.settings.collect { settings ->
-                overlayEnabled = settings.overlayEnabled
+                overlayServiceEnabled = settings.overlayEnabled || settings.musicIslandEnabled
             }
         }
     }
@@ -30,16 +30,17 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         lifecycleScope.launch {
-            overlayEnabled = (applicationContext as XiaozhiApplication)
-                .settingsRepository.settings.first().overlayEnabled
-            if (overlayEnabled && !Settings.canDrawOverlays(this@MainActivity)) {
+            val settings = (applicationContext as XiaozhiApplication)
+                .settingsRepository.settings.first()
+            overlayServiceEnabled = settings.overlayEnabled || settings.musicIslandEnabled
+            if (overlayServiceEnabled && !Settings.canDrawOverlays(this@MainActivity)) {
                 startActivity(
                     Intent(
                         Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                         Uri.parse("package:$packageName")
                     )
                 )
-            } else if (overlayEnabled) {
+            } else if (overlayServiceEnabled) {
                 SystemOverlayService.setAppForeground(this@MainActivity, foreground = true)
                 SystemOverlayService.start(this@MainActivity)
             }
@@ -47,7 +48,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
-        if (overlayEnabled) {
+        if (overlayServiceEnabled) {
             SystemOverlayService.setAppForeground(this, foreground = false)
             SystemOverlayService.start(this)
         }

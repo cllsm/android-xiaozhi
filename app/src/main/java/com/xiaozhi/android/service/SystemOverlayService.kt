@@ -27,6 +27,7 @@ import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.xiaozhi.android.XiaozhiApplication
 import com.xiaozhi.android.MainActivity
 import com.xiaozhi.android.core.ConnectionStatus
 import com.xiaozhi.android.core.DeviceState
@@ -74,6 +75,8 @@ class SystemOverlayService : Service() {
 
     private var panelExpanded = false
     private var contentHiddenByApp = false
+    private var appInForeground = false
+    private var controlOverlayEnabled = false
     private var latestState = VoiceSessionState.state.value
     private var latestMusicState = MusicPlaybackState.state.value
     private var musicIslandShown = false
@@ -99,6 +102,7 @@ class SystemOverlayService : Service() {
 
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         contentView = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        contentView.visibility = View.GONE
         musicIslandView = createMusicIsland().apply { visibility = View.GONE }
         ballView = createBall()
         panelView = createPanel()
@@ -120,6 +124,8 @@ class SystemOverlayService : Service() {
             x = resources.displayMetrics.widthPixels - ballSize - margin
             y = (resources.displayMetrics.heightPixels * 0.42f).roundToInt()
         }
+        layoutParams.width = 1
+        layoutParams.height = 1
         musicLayoutParams = WindowManager.LayoutParams(
             dp(MUSIC_ISLAND_WIDTH_DP),
             dp(MUSIC_ISLAND_HEIGHT_DP),
@@ -148,6 +154,22 @@ class SystemOverlayService : Service() {
             windowManager.addView(musicIslandView, musicLayoutParams)
         }
 
+        val app = application as? XiaozhiApplication
+        scope.launch {
+            if (app == null) {
+                stopSelf()
+                return@launch
+            }
+            app.settingsRepository.settings.collect { settings ->
+                if (!settings.overlayEnabled && !settings.musicIslandEnabled) {
+                    stopSelf()
+                    return@collect
+                }
+                controlOverlayEnabled = settings.overlayEnabled
+                setControlContentHidden(appInForeground || !controlOverlayEnabled)
+            }
+        }
+
         scope.launch {
             VoiceSessionState.state.collect { state ->
                 latestState = state
@@ -170,8 +192,14 @@ class SystemOverlayService : Service() {
             return START_NOT_STICKY
         }
         when (intent?.action) {
-            ACTION_APP_FOREGROUND -> setControlContentHidden(true)
-            ACTION_APP_BACKGROUND -> setControlContentHidden(false)
+            ACTION_APP_FOREGROUND -> {
+                appInForeground = true
+                setControlContentHidden(true)
+            }
+            ACTION_APP_BACKGROUND -> {
+                appInForeground = false
+                setControlContentHidden(!controlOverlayEnabled)
+            }
         }
         return START_STICKY
     }

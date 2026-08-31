@@ -2,6 +2,7 @@
 .gradle/
 .kotlin/
 .inspect/
+.android/
 build/
 app/build/
 local.properties

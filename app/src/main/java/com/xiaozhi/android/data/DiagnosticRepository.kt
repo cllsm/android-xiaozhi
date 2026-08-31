@@ -127,17 +127,17 @@ class DiagnosticRepository(
             ),
             DiagnosticItem(
                 "悬浮窗",
-                if (!settings.overlayEnabled || Settings.canDrawOverlays(context)) {
+                if (!overlayServiceEnabled(settings) || Settings.canDrawOverlays(context)) {
                     DiagnosticState.Ok
                 } else {
                     DiagnosticState.Warning
                 },
-                if (!settings.overlayEnabled) {
-                    "未启用，可在设置中开启"
+                if (!overlayServiceEnabled(settings)) {
+                    "未启用，可在设置中开启音乐灵动岛或语音快捷球"
                 } else if (Settings.canDrawOverlays(context)) {
-                    "已授权，后台可显示快捷球"
+                    "已授权，后台可显示灵动岛或快捷球"
                 } else {
-                    "未授权，后台快捷球不可用"
+                    "未授权，灵动岛和快捷球不可用"
                 }
             )
         )
@@ -157,6 +157,9 @@ class DiagnosticRepository(
         }
         return listOf(DiagnosticItem("网络", state, detail))
     }
+
+    private fun overlayServiceEnabled(settings: SettingsState): Boolean =
+        settings.overlayEnabled || settings.musicIslandEnabled
 
     private fun powerItems(): List<DiagnosticItem> {
         val manager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
