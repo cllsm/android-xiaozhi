@@ -24,6 +24,7 @@ local.properties
 *.tmp
 *.temp
 *.bak
+__pycache__/
 
 # OS
 .DS_Store

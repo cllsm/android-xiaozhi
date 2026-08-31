@@ -57,7 +57,9 @@ class ChatHistoryRepository private constructor(context: Context) {
                                 id = item.optLong("id"),
                                 text = text,
                                 fromUser = item.optBoolean("from_user"),
-                                timestamp = item.optLong("timestamp")
+                                timestamp = item.optLong("timestamp"),
+                                imagePath = item.optString("image_path").takeIf { it.isNotBlank() },
+                                thumbnailPath = item.optString("thumbnail_path").takeIf { it.isNotBlank() }
                             )
                         )
                     }
@@ -76,6 +78,10 @@ class ChatHistoryRepository private constructor(context: Context) {
                     .put("text", message.text)
                     .put("from_user", message.fromUser)
                     .put("timestamp", message.timestamp)
+                    .apply {
+                        message.imagePath?.let { put("image_path", it) }
+                        message.thumbnailPath?.let { put("thumbnail_path", it) }
+                    }
             )
         }
         runCatching {

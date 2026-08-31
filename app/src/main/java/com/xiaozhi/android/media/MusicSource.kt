@@ -176,9 +176,22 @@ class NeteaseLosslessMusicSource(
     override fun lyrics(songId: String): String = "网易云无损接口暂不支持歌词"
 
     private fun executeJson(request: Request): JSONObject {
+        var attempt = 0
+        while (true) {
+            try {
+                return executeJsonOnce(request)
+            } catch (error: GatewayHttpException) {
+                if (error.code !in 500..599 || attempt >= 1) throw error
+            }
+            attempt += 1
+            Thread.sleep(GATEWAY_RETRY_DELAY_MS)
+        }
+    }
+
+    private fun executeJsonOnce(request: Request): JSONObject {
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
-                throw IllegalStateException("${displayName}网关返回 HTTP ${response.code}")
+                throw GatewayHttpException(response.code)
             }
             val json = JSONObject(response.body?.string().orEmpty())
             validateGatewayResponse(json)
@@ -194,7 +207,13 @@ class NeteaseLosslessMusicSource(
         val error = payload.optString("error")
             .ifBlank { payload.optString("msg") }
             .ifBlank { "请求失败" }
-        throw IllegalStateException("网易云无损网关返回 $innerCode：$error")
+            throw IllegalStateException("网易云无损网关返回 $innerCode：$error")
+    }
+
+    private class GatewayHttpException(val code: Int) : Exception("HTTP $code")
+
+    private companion object {
+        const val GATEWAY_RETRY_DELAY_MS = 150L
     }
 }
 

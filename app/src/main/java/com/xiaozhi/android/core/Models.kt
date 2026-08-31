@@ -54,7 +54,9 @@ data class ChatMessage(
     val id: Long,
     val text: String,
     val fromUser: Boolean,
-    val timestamp: Long
+    val timestamp: Long,
+    val imagePath: String? = null,
+    val thumbnailPath: String? = null
 )
 
 data class SettingsState(

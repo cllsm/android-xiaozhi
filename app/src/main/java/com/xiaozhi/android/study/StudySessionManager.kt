@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import com.xiaozhi.android.core.VoiceSessionState
+import com.xiaozhi.android.data.ChatImageStore
 import com.xiaozhi.android.data.StudySessionRepository
 import com.xiaozhi.android.media.CameraCaptureController
 import com.xiaozhi.android.mcp.VisionService
@@ -26,6 +27,12 @@ data class StudyCaptureResult(
     val message: String,
     val payload: JSONObject? = null
 )
+
+enum class StudyFrameSource {
+    Manual,
+    Speech,
+    Auto
+}
 
 object StudySessionManager {
     private var appContext: Context? = null
@@ -149,7 +156,8 @@ object StudySessionManager {
     suspend fun captureHomeworkPage(
         intent: String,
         questionNumber: Int? = null,
-        image: ByteArray? = null
+        image: ByteArray? = null,
+        frameSource: StudyFrameSource = StudyFrameSource.Manual
     ): StudyCaptureResult = capturePage {
         val state = StudySessionState.state.value
         if (state.mode != StudyMode.Homework) {
@@ -160,7 +168,12 @@ object StudySessionManager {
             questionNumber = questionNumber,
             grade = state.settings.childGrade
         )
-        val visionResult = analyze(prompt, "homework.jpg", image)
+        val visionResult = analyze(
+            prompt = prompt,
+            fileName = "homework.jpg",
+            providedImage = image,
+            chatLabel = frameChatLabel(frameSource, isHomework = true)
+        )
         if (!visionResult.optBoolean("success", true)) {
             return@capturePage failure(visionResult.optString("message").ifBlank {
                 "作业页识别失败"
@@ -214,7 +227,10 @@ object StudySessionManager {
         )
     }
 
-    suspend fun captureReadingPage(image: ByteArray? = null): StudyCaptureResult = capturePage {
+    suspend fun captureReadingPage(
+        image: ByteArray? = null,
+        frameSource: StudyFrameSource = StudyFrameSource.Manual
+    ): StudyCaptureResult = capturePage {
         val state = StudySessionState.state.value
         if (state.mode != StudyMode.Reading) {
             return@capturePage failure("当前不是阅读模式")
@@ -222,7 +238,8 @@ object StudySessionManager {
         val visionResult = analyze(
             ReadingPromptBuilder.buildExtract(),
             "reading.jpg",
-            image
+            image,
+            frameChatLabel(frameSource, isHomework = false)
         )
         if (!visionResult.optBoolean("success", true)) {
             return@capturePage failure(visionResult.optString("message").ifBlank {
@@ -407,7 +424,8 @@ object StudySessionManager {
     private suspend fun analyze(
         prompt: String,
         fileName: String,
-        providedImage: ByteArray? = null
+        providedImage: ByteArray? = null,
+        chatLabel: String
     ): JSONObject {
         val context = appContext ?: return JSONObject()
             .put("success", false)
@@ -427,7 +445,29 @@ object StudySessionManager {
             ?: return JSONObject()
                 .put("success", false)
                 .put("message", "拍照失败，请确认摄像头可用")
-        return VisionService.analyze(prompt, image, fileName)
+        val storedImage = ChatImageStore.store(context, image)
+            ?: return JSONObject()
+                .put("success", false)
+                .put("message", "图片保存失败，请稍后重试")
+        VoiceSessionState.appendChat(
+            chatLabel,
+            fromUser = true,
+            imagePath = storedImage.fullPath,
+            thumbnailPath = storedImage.thumbnailPath
+        )
+        return VisionService.analyze(prompt, storedImage.uploadBytes, fileName)
+    }
+
+    private fun frameChatLabel(
+        source: StudyFrameSource,
+        isHomework: Boolean
+    ): String {
+        val page = if (isHomework) "作业页" else "书页"
+        return when (source) {
+            StudyFrameSource.Manual -> "陪学拍摄：$page"
+            StudyFrameSource.Speech -> "陪学语音取帧：$page"
+            StudyFrameSource.Auto -> "陪学自动取帧：$page"
+        }
     }
 
     private fun startTimer() {

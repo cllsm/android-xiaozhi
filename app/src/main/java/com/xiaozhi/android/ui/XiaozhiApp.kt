@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
@@ -65,9 +66,12 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.HealthAndSafety
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MusicNote
@@ -89,6 +93,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
@@ -114,6 +119,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
@@ -127,6 +133,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.xiaozhi.android.BuildConfig
@@ -151,6 +159,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 private enum class Screen {
@@ -166,7 +176,8 @@ private enum class Screen {
 
 private enum class DirectVisionAction {
     Screen,
-    Camera
+    Camera,
+    Image
 }
 
 private const val DEVELOPER_UNLOCK_TAPS = 7
@@ -243,6 +254,7 @@ private fun AppContent(
                         onSendText = viewModel::sendText,
                         onAnalyzeScreen = viewModel::analyzeScreen,
                         onAnalyzeCamera = viewModel::analyzeCamera,
+                        onAnalyzeImage = viewModel::analyzeImage,
                         onOpenRecentMusic = { screen = Screen.RecentMusic }
                     )
                     Screen.Study -> StudyScreen(
@@ -313,6 +325,7 @@ private fun AppContent(
             MusicSelectionDialog(
                 prompt = prompt,
                 onSelect = viewModel::selectMusicCandidate,
+                onPostponeAutoPlay = viewModel::postponeMusicSelectionAutoPlay,
                 onDismiss = viewModel::dismissMusicSelection
             )
         }
@@ -366,6 +379,7 @@ private fun MainBottomNavigation(
 private fun MusicSelectionDialog(
     prompt: MusicSelectionPrompt,
     onSelect: (Int) -> Unit,
+    onPostponeAutoPlay: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val rememberSelectionHint = if (prompt.options.size > 1) {
@@ -389,18 +403,39 @@ private fun MusicSelectionDialog(
         }
     }
 
+    var currentPage by remember(prompt.query, prompt.options) { mutableStateOf(0) }
+    val pageCount = prompt.pageCount
+    val pageStart = currentPage * prompt.pageSize
+    val visibleOptions = prompt.options.drop(pageStart).take(prompt.pageSize)
+
+    fun changePage(delta: Int) {
+        val nextPage = (currentPage + delta).coerceIn(0, pageCount - 1)
+        if (nextPage != currentPage) {
+            currentPage = nextPage
+            onPostponeAutoPlay()
+        }
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("选择歌曲") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
                 Text(
                     text = "“${prompt.query}”找到 ${prompt.options.size} 个版本，可以直接说或输入序号。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    text = "${(remainingMillis + 999L) / 1000L} 秒后自动播放第 1 首",
+                    text = if (pageCount > 1) {
+                        "第 ${currentPage + 1}/${pageCount} 页，" +
+                            "${(remainingMillis + 999L) / 1000L} 秒后自动播放第 1 首"
+                    } else {
+                        "${(remainingMillis + 999L) / 1000L} 秒后自动播放第 1 首"
+                    },
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary
                 )
@@ -411,7 +446,7 @@ private fun MusicSelectionDialog(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                prompt.options.forEach { option ->
+                visibleOptions.forEach { option ->
                     TextButton(
                         onClick = { onSelect(option.number) },
                         modifier = Modifier.fillMaxWidth()
@@ -433,15 +468,58 @@ private fun MusicSelectionDialog(
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
+                                listOf(option.artist, option.album)
+                                    .filter { it.isNotBlank() }
+                                    .joinToString(" · ")
+                                    .takeIf { it.isNotBlank() }
+                                    ?.let { metadata ->
+                                        Text(
+                                            text = metadata,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
                                 Text(
-                                    text = listOf(option.artist, option.album)
-                                        .filter { it.isNotBlank() }
-                                        .joinToString(" · ")
-                                        .ifBlank { option.sourceName },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    text = option.sourceName,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
                                 )
                             }
+                        }
+                    }
+                }
+                if (pageCount > 1) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(
+                            onClick = { changePage(-1) },
+                            enabled = currentPage > 0
+                        ) {
+                            Icon(
+                                Icons.Filled.ChevronLeft,
+                                contentDescription = "上一页"
+                            )
+                        }
+                        Text(
+                            text = "${pageStart + 1}-${
+                                minOf(pageStart + prompt.pageSize, prompt.options.size)
+                            } / ${prompt.options.size}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                            textAlign = TextAlign.Center
+                        )
+                        IconButton(
+                            onClick = { changePage(1) },
+                            enabled = currentPage < pageCount - 1
+                        ) {
+                            Icon(
+                                Icons.Filled.ChevronRight,
+                                contentDescription = "下一页"
+                            )
                         }
                     }
                 }
@@ -462,6 +540,7 @@ private fun HomeScreen(
     onSendText: (String) -> Boolean,
     onAnalyzeScreen: (String) -> Unit,
     onAnalyzeCamera: (String) -> Unit,
+    onAnalyzeImage: (String, Uri) -> Unit,
     onOpenRecentMusic: () -> Unit
 ) {
     val context = LocalContext.current
@@ -475,6 +554,8 @@ private fun HomeScreen(
     var pendingTextNeedsCamera by remember { mutableStateOf(false) }
     var pendingVisionAction by remember { mutableStateOf<DirectVisionAction?>(null) }
     var pendingVisionPrompt by remember { mutableStateOf<String?>(null) }
+    var pendingVisionImage by remember { mutableStateOf<Uri?>(null) }
+    var viewingImage by remember { mutableStateOf<String?>(null) }
     var toolsExpanded by remember { mutableStateOf(false) }
     val chatListState = rememberLazyListState()
 
@@ -487,8 +568,10 @@ private fun HomeScreen(
     ) { grants ->
         val visionAction = pendingVisionAction
         val visionPrompt = pendingVisionPrompt
+        val visionImage = pendingVisionImage
         pendingVisionAction = null
         pendingVisionPrompt = null
+        pendingVisionImage = null
 
         if (grants[Manifest.permission.RECORD_AUDIO] == true) {
             VoiceForegroundService.start(context)
@@ -501,6 +584,8 @@ private fun HomeScreen(
                     visionPrompt?.let(onAnalyzeScreen)
                 DirectVisionAction.Camera ->
                     visionPrompt?.let(onAnalyzeCamera)
+                DirectVisionAction.Image ->
+                    visionImage?.let { image -> onAnalyzeImage(visionPrompt.orEmpty(), image) }
                 null -> if (regularCameraReady) {
                     pendingText?.let(onSendText) ?: VoiceForegroundService.startListening(context)
                 }
@@ -511,6 +596,8 @@ private fun HomeScreen(
                     visionPrompt?.let(onAnalyzeScreen)
                 DirectVisionAction.Camera ->
                     visionPrompt?.let(onAnalyzeCamera)
+                DirectVisionAction.Image ->
+                    visionImage?.let { image -> onAnalyzeImage(visionPrompt.orEmpty(), image) }
                 null -> Unit
             }
         }
@@ -552,6 +639,7 @@ private fun HomeScreen(
             DirectVisionAction.Camera -> context.checkSelfPermission(
                 Manifest.permission.CAMERA
             ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            DirectVisionAction.Image -> true
         }
 
         if (microphoneReady && actionPermissionReady) {
@@ -560,6 +648,7 @@ private fun HomeScreen(
             when (action) {
                 DirectVisionAction.Screen -> onAnalyzeScreen(prompt)
                 DirectVisionAction.Camera -> onAnalyzeCamera(prompt)
+                DirectVisionAction.Image -> Unit
             }
             return
         }
@@ -577,6 +666,43 @@ private fun HomeScreen(
                 }
             }.toTypedArray()
         )
+    }
+
+    fun requestImagePrompt(prompt: String, image: Uri) {
+        val microphoneReady = context.checkSelfPermission(
+            Manifest.permission.RECORD_AUDIO
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (microphoneReady) {
+            VoiceForegroundService.start(context)
+            startRequested = true
+            onAnalyzeImage(prompt, image)
+            return
+        }
+
+        pendingVisionAction = DirectVisionAction.Image
+        pendingVisionPrompt = prompt
+        pendingVisionImage = image
+        pendingText = null
+        pendingTextNeedsCamera = false
+        permissionLauncher.launch(
+            buildList {
+                add(Manifest.permission.RECORD_AUDIO)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    add(Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }.toTypedArray()
+        )
+    }
+
+    val imagePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { image ->
+        if (image != null) {
+            val prompt = textDraft.trim().ifBlank { "描述这张图片的内容" }
+            textDraft = ""
+            toolsExpanded = false
+            requestImagePrompt(prompt, image)
+        }
     }
 
     val projectionLauncher = rememberLauncherForActivityResult(
@@ -788,7 +914,8 @@ private fun HomeScreen(
                             onCopy = {
                                 clipboard.setText(AnnotatedString(message.text))
                             },
-                            onResend = { onSendText(message.text) }
+                            onResend = { onSendText(message.text) },
+                            onImageClick = { path -> viewingImage = path }
                         )
                     }
                 }
@@ -922,6 +1049,13 @@ private fun HomeScreen(
 
                 RoundIconButton(
                     icon = {
+                        Icon(Icons.Filled.Image, contentDescription = "发送图片")
+                    },
+                    onClick = { imagePicker.launch("image/*") }
+                )
+
+                RoundIconButton(
+                    icon = {
                         Icon(
                             if (
                                 runtimeState.deviceState == DeviceState.Listening ||
@@ -985,6 +1119,12 @@ private fun HomeScreen(
         }
     }
 
+    viewingImage?.let { path ->
+        ImageViewerDialog(
+            path = path,
+            onDismiss = { viewingImage = null }
+        )
+    }
     }
 }
 
@@ -1530,7 +1670,8 @@ private fun RoundIconButton(
 private fun ChatBubble(
     message: ChatMessage,
     onCopy: () -> Unit,
-    onResend: () -> Unit
+    onResend: () -> Unit,
+    onImageClick: (String) -> Unit
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     Box(
@@ -1580,6 +1721,20 @@ private fun ChatBubble(
                     )
                 }
             }
+            val imagePath = message.thumbnailPath ?: message.imagePath
+            if (imagePath != null) {
+                LocalFileImage(
+                    path = imagePath,
+                    contentDescription = "查看图片",
+                    modifier = Modifier
+                        .width(180.dp)
+                        .height(120.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { onImageClick(message.imagePath ?: imagePath) },
+                    contentScale = ContentScale.Crop
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+            }
             Text(
                 text = message.text,
                 style = MaterialTheme.typography.bodyMedium,
@@ -1598,6 +1753,79 @@ private fun ChatBubble(
                 textAlign = TextAlign.End,
                 modifier = Modifier.fillMaxWidth()
             )
+        }
+    }
+}
+
+@Composable
+private fun ImageViewerDialog(
+    path: String,
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .clickable(onClick = onDismiss),
+            contentAlignment = Alignment.Center
+        ) {
+            LocalFileImage(
+                path = path,
+                contentDescription = "图片预览",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Fit
+            )
+        }
+    }
+}
+
+@Composable
+private fun LocalFileImage(
+    path: String,
+    contentDescription: String?,
+    modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop
+) {
+    var bitmap by remember(path) {
+        mutableStateOf<android.graphics.Bitmap?>(null)
+    }
+
+    LaunchedEffect(path) {
+        bitmap = withContext(Dispatchers.IO) {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(path, bounds)
+            var sampleSize = 1
+            while (
+                bounds.outWidth / (sampleSize * 2) >= 720 &&
+                bounds.outHeight / (sampleSize * 2) >= 720
+            ) {
+                sampleSize *= 2
+            }
+            BitmapFactory.decodeFile(
+                path,
+                BitmapFactory.Options().apply { inSampleSize = sampleSize }
+            )
+        }
+    }
+
+    val loadedBitmap = bitmap
+    if (loadedBitmap != null) {
+        Image(
+            bitmap = loadedBitmap.asImageBitmap(),
+            contentDescription = contentDescription,
+            modifier = modifier,
+            contentScale = contentScale
+        )
+    } else {
+        Box(
+            modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator(modifier = Modifier.size(22.dp))
         }
     }
 }

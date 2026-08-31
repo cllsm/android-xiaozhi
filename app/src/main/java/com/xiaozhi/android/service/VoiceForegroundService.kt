@@ -29,6 +29,7 @@ import com.xiaozhi.android.data.DeviceIdentityRepository
 import com.xiaozhi.android.data.SettingsRepository
 import com.xiaozhi.android.media.MusicIntentParser
 import com.xiaozhi.android.media.NativeMusicController
+import com.xiaozhi.android.media.VoiceMusicInterruptionPolicy
 import com.xiaozhi.android.mcp.McpDispatcher
 import com.xiaozhi.android.network.OtaClient
 import com.xiaozhi.android.network.XiaozhiWebSocketClient
@@ -535,21 +536,24 @@ class VoiceForegroundService : LifecycleService() {
                         )
                         updateNotification(stateText)
                         if (message.optString("state") == "start") {
-                            NativeMusicController.pause(source = "tts")
+                            NativeMusicController.pauseForVoiceInteraction()
                         }
                         if (message.optString("state") == "stop") {
                             startContinuousListening("继续聆听")
                             VoiceSessionState.updateConversation(currentText = "")
                         }
                         if (message.optString("state") == "stop" &&
-                            NativeMusicController.isPausedByTts()
+                            NativeMusicController.isPausedForVoiceInteraction()
                         ) {
-                            NativeMusicController.resume()
-                            }
+                            NativeMusicController.resumeAfterVoiceInteraction()
+                        }
                     }
                     if (message.optString("type") == "stt") {
                         val text = message.optString("text")
                         val state = message.optString("state")
+                        if (VoiceMusicInterruptionPolicy.shouldPauseForUserSpeech(state, text)) {
+                            NativeMusicController.pauseForVoiceInteraction()
+                        }
                         VoiceSessionState.updateConversation(currentText = text)
                         if (text.isNotBlank() && (state.isBlank() || state == "final")) {
                             val studyState = StudySessionState.state.value

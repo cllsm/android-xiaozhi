@@ -77,13 +77,20 @@ object StudyObservationEngine {
                                 StudySessionState.recordObservationFrame(
                                     if (speechFrame) TRIGGER_SPEECH else TRIGGER_AUTO
                                 )
+                                val frameSource = if (speechFrame) {
+                                    StudyFrameSource.Speech
+                                } else {
+                                    StudyFrameSource.Auto
+                                }
                                 val result = when (state.mode) {
                                     StudyMode.Homework -> StudySessionManager.captureHomeworkPage(
                                         intent = HomeworkPromptBuilder.INTENT_REFRESH,
-                                        image = frame
+                                        image = frame,
+                                        frameSource = frameSource
                                     )
                                     StudyMode.Reading -> StudySessionManager.captureReadingPage(
-                                        image = frame
+                                        image = frame,
+                                        frameSource = frameSource
                                     )
                                     StudyMode.None -> null
                                 }
@@ -151,11 +158,22 @@ object StudyObservationEngine {
             frameCaptureBusy.set(false)
             return null
         }
-        return try {
-            activeController.capture()
+        var capturedFrame: ByteArray? = null
+        try {
+            for (attempt in 0 until CAPTURE_ATTEMPTS) {
+                val frame = activeController.capture()
+                if (frame != null) {
+                    capturedFrame = frame
+                    break
+                }
+                if (attempt < CAPTURE_ATTEMPTS - 1) {
+                    Thread.sleep(CAPTURE_RETRY_DELAY_MS)
+                }
+            }
         } finally {
             frameCaptureBusy.set(false)
         }
+        return capturedFrame
     }
 
     fun stop() {
@@ -179,6 +197,8 @@ object StudyObservationEngine {
     private const val SWITCH_START_TIMEOUT_MS = 2_000L
     private const val MIN_INTERVAL_SECONDS = 3
     private const val MAX_INTERVAL_SECONDS = 30
+    private const val CAPTURE_ATTEMPTS = 2
+    private const val CAPTURE_RETRY_DELAY_MS = 250L
     private const val TRIGGER_AUTO = "auto"
     private const val TRIGGER_SPEECH = "speech"
 }

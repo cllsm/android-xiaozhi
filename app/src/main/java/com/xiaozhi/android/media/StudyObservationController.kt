@@ -18,6 +18,7 @@ import android.os.Looper
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
+import android.util.Log
 import android.view.Surface
 import android.util.Size
 import com.xiaozhi.android.study.StudyCameraFacing
@@ -31,6 +32,7 @@ data class StudyPreviewInfo(
     val height: Int,
     val rotationDegrees: Int,
     val lensFacing: Int,
+    val isFrontCamera: Boolean,
     val mirror: Boolean
 )
 
@@ -222,6 +224,18 @@ class StudyObservationController(
                             }.isSuccess
                             if (repeatingResult) {
                                 previewSize = size
+                                val previewRotation = StudyPreviewOrientation.previewRotationDegrees(
+                                    sensorOrientationDegrees = sensorOrientation,
+                                    isFrontCamera = lensFacing ==
+                                        CameraCharacteristics.LENS_FACING_FRONT,
+                                    displayRotation = displayRotation
+                                )
+                                Log.i(
+                                    "StudyPreview",
+                                    "attached:size=${size.width}x${size.height}," +
+                                        "sensor=$sensorOrientation,display=$displayRotation," +
+                                        "facing=$lensFacing,rotation=$previewRotation"
+                                )
                                 onResultOnUiThread(
                                     onResult,
                                     StudyPreviewInfo(
@@ -229,6 +243,8 @@ class StudyObservationController(
                                         height = size.height,
                                         rotationDegrees = sensorOrientation,
                                         lensFacing = lensFacing,
+                                        isFrontCamera = lensFacing ==
+                                            CameraCharacteristics.LENS_FACING_FRONT,
                                         mirror = lensFacing ==
                                             CameraCharacteristics.LENS_FACING_FRONT
                                     )
@@ -295,6 +311,20 @@ class StudyObservationController(
         val imageReader = reader ?: return null
 
         return try {
+            // Drain images left by an earlier capture, then wait for this
+            // capture's JPEG to actually reach the reader. onCaptureCompleted
+            // alone does not guarantee that the buffer is available yet.
+            imageReader.setOnImageAvailableListener(null, handler)
+            while (true) {
+                val staleImage = imageReader.acquireLatestImage() ?: break
+                staleImage.close()
+            }
+            val frameAvailable = CountDownLatch(1)
+            val captureFailed = AtomicBoolean(false)
+            imageReader.setOnImageAvailableListener(
+                { frameAvailable.countDown() },
+                handler
+            )
             val request = activeCamera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
                 .apply {
                     addTarget(imageReader.surface)
@@ -318,6 +348,7 @@ class StudyObservationController(
                         request: CaptureRequest,
                         failure: android.hardware.camera2.CaptureFailure
                     ) {
+                        captureFailed.set(true)
                         captured.countDown()
                     }
                 },
@@ -325,9 +356,11 @@ class StudyObservationController(
             )
 
             val deadline = SystemClock.elapsedRealtime() + CAPTURE_TIMEOUT_MS
-            while (!captured.await(FRAME_WAIT_MS, TimeUnit.MILLISECONDS)) {
+            while (!frameAvailable.await(FRAME_WAIT_MS, TimeUnit.MILLISECONDS)) {
+                if (captureFailed.get()) return null
                 if (SystemClock.elapsedRealtime() >= deadline) return null
             }
+            if (!captured.await(CAPTURE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) return null
             val image = imageReader.acquireLatestImage() ?: return null
             image.use { capturedImage ->
                 val buffer = capturedImage.planes.first().buffer
@@ -399,9 +432,12 @@ class StudyObservationController(
         )?.getOutputSizes(Surface::class.java).orEmpty()
         // Sensor buffers are rotated before display. Match the aspect after that
         // rotation so center-crop does not throw away a disproportionate frame.
-        val displayRotation = ((sensorOrientationDegrees - displayRotationDegrees) %
-            360 + 360) % 360
-        val targetAspect = if (displayRotation % 180 == 90) {
+        val previewRotation = StudyPreviewOrientation.previewRotationDegrees(
+            sensorOrientationDegrees = sensorOrientationDegrees,
+            isFrontCamera = lensFacing == CameraCharacteristics.LENS_FACING_FRONT,
+            displayRotation = displayRotationDegrees / 90
+        )
+        val targetAspect = if (StudyPreviewOrientation.isQuarterTurn(previewRotation)) {
             viewHeight.toDouble() / viewWidth.toDouble()
         } else {
             viewWidth.toDouble() / viewHeight.toDouble()

@@ -109,7 +109,7 @@ private fun privacyItems(): List<Triple<ImageVector, String, String>> {
         Triple(
             Icons.Filled.PrivacyTip,
             "陪学模式",
-            "开启固定机位观察后，陪做作业和陪读会在学习期间保持相机会话；按设定间隔或孩子说话完成时取单帧识别。全程不录制视频、不保存画面，仅上传当次需要识别的 JPEG 单帧。跟读转写仅用于当次评测，报告保存在本地。"
+            "开启固定机位观察后，陪做作业和陪读会在学习期间保持相机会话；按设定间隔或孩子说话完成时取单帧识别。全程不录制视频；当次识别的 JPEG 帧会保存在本地对话记录中并可查看。跟读转写仅用于当次评测，报告保存在本地。"
         ),
         Triple(
             Icons.Filled.PrivacyTip,

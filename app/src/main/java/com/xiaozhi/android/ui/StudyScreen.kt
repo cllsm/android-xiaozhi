@@ -4,6 +4,11 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import android.hardware.display.DisplayManager
+import android.view.Display
 import android.view.ViewTreeObserver
 import android.view.Gravity
 import android.view.Surface
@@ -83,6 +88,7 @@ import com.xiaozhi.android.core.ChatMessage
 import com.xiaozhi.android.core.DeviceState
 import com.xiaozhi.android.service.VoiceForegroundService
 import com.xiaozhi.android.media.StudyPreviewInfo
+import com.xiaozhi.android.media.StudyPreviewOrientation
 import com.xiaozhi.android.study.StudyObservationEngine
 import com.xiaozhi.android.study.AnswerPolicy
 import com.xiaozhi.android.study.StudyCameraFacing
@@ -305,7 +311,7 @@ internal fun StudyScreen(
                     }
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
-                        text = "固定手机，让孩子和学习资料同时进入画面。相机只在陪学期间保持会话，不录制视频、不保存画面，取帧时仅上传当前 JPEG 单帧用于识别。",
+                        text = "固定手机，让孩子和学习资料同时进入画面。相机只在陪学期间保持会话，不录制视频；取当前 JPEG 帧用于识别，识别帧会保存在本机并显示在对话中。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -855,6 +861,8 @@ private fun StudyPreviewSurface(
         var previewInfo: StudyPreviewInfo? = null
         var observedContainer: FrameLayout? = null
         var layoutObserver: ViewTreeObserver.OnGlobalLayoutListener? = null
+        val display = currentDisplay(context)
+        var lastDisplayRotation = display?.rotation ?: currentDisplayRotation(context)
 
         fun applyLayout() {
             val info = previewInfo ?: return
@@ -926,6 +934,25 @@ private fun StudyPreviewSurface(
         }
         textureView.addOnAttachStateChangeListener(attachListener)
 
+        val displayListener = object : DisplayManager.DisplayListener {
+            override fun onDisplayAdded(displayId: Int) = Unit
+
+            override fun onDisplayRemoved(displayId: Int) = Unit
+
+            override fun onDisplayChanged(displayId: Int) {
+                if (display?.displayId != displayId) return
+                val nextRotation = display.rotation
+                if (nextRotation == lastDisplayRotation) return
+
+                lastDisplayRotation = nextRotation
+                Log.i("StudyPreview", "display_changed:rotation=$nextRotation")
+                textureView.post { applyLayout() }
+            }
+        }
+        display
+            ?.let { context.getSystemService(DisplayManager::class.java) }
+            ?.registerDisplayListener(displayListener, Handler(Looper.getMainLooper()))
+
         onDispose {
             textureView.removeOnAttachStateChangeListener(attachListener)
             layoutObserver?.let { listener ->
@@ -933,6 +960,9 @@ private fun StudyPreviewSurface(
             }
             observedContainer = null
             layoutObserver = null
+            display
+                ?.let { context.getSystemService(DisplayManager::class.java) }
+                ?.unregisterDisplayListener(displayListener)
             attachedSurfaceTexture?.let(StudyObservationEngine::detachPreview)
             attachedSurfaceTexture = null
             textureView.surfaceTextureListener = null
@@ -969,7 +999,11 @@ private fun applyCameraViewLayout(
         return
     }
 
-    val rotation = ((info.rotationDegrees - displayRotation * 90) % 360 + 360) % 360
+    val rotation = StudyPreviewOrientation.previewRotationDegrees(
+        sensorOrientationDegrees = info.rotationDegrees,
+        isFrontCamera = info.isFrontCamera,
+        displayRotation = displayRotation
+    )
     val uprightWidth = if (rotation == 90 || rotation == 270) info.height else info.width
     val uprightHeight = if (rotation == 90 || rotation == 270) info.width else info.height
     val scale = maxOf(
@@ -1111,7 +1145,7 @@ private fun StudyFullscreenPreview(
                 )
                 Spacer(modifier = Modifier.weight(1f))
                 Text(
-                    text = "不录像 · 不保存画面",
+                    text = "不录像 · 识别帧存本机",
                     style = MaterialTheme.typography.labelSmall,
                     color = Color.White.copy(alpha = 0.72f)
                 )
@@ -1185,12 +1219,15 @@ private fun LiveChatBubble(
 }
 
 private fun currentDisplayRotation(context: Context): Int {
+    return currentDisplay(context)?.rotation ?: Surface.ROTATION_0
+}
+
+private fun currentDisplay(context: Context): Display? {
     return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-        context.display?.rotation ?: Surface.ROTATION_0
+        context.display
     } else {
         @Suppress("DEPRECATION")
-        context.getSystemService(WindowManager::class.java)?.defaultDisplay?.rotation
-            ?: Surface.ROTATION_0
+        context.getSystemService(WindowManager::class.java)?.defaultDisplay
     }
 }
 

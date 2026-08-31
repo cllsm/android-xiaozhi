@@ -15,6 +15,8 @@ import com.xiaozhi.android.core.VoiceSessionState
 import com.xiaozhi.android.core.WakeWordTestState
 import com.xiaozhi.android.audio.AudioInputEngine
 import com.xiaozhi.android.data.ChatHistoryRepository
+import com.xiaozhi.android.data.ChatImageStore
+import com.xiaozhi.android.data.StoredChatImage
 import com.xiaozhi.android.data.DeviceCredentialRepository
 import com.xiaozhi.android.data.DiagnosticRepository
 import com.xiaozhi.android.data.MusicHistoryRepository
@@ -185,6 +187,10 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
 
     fun dismissMusicSelection() {
         NativeMusicController.clearPendingSelection()
+    }
+
+    fun postponeMusicSelectionAutoPlay() {
+        NativeMusicController.postponeSelectionAutoPlay()
     }
 
     fun clearMusicHistory() {
@@ -394,21 +400,27 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun analyzeCamera(prompt: String) {
-        runDirectVision(
+        runImageVision(
             prompt = prompt,
-            runningText = "正在拍照识别..."
-        ) {
-            val image = CameraCaptureController(getApplication()).capture()
-                ?: return@runDirectVision visionFailure("拍照不可用，请授予相机权限")
-            VisionService.analyze(
-                question = ScreenVisionPromptBuilder.buildCameraPrompt(
-                    prompt,
-                    structuredOutput = false
-                ),
-                image = image,
-                fileName = "camera.jpg"
-            )
-        }
+            runningText = "正在拍照识别...",
+            loadImage = {
+                val image = CameraCaptureController(getApplication()).capture()
+                    ?: return@runImageVision null
+                ChatImageStore.store(getApplication(), image)
+            }
+        )
+    }
+
+    fun analyzeImage(prompt: String, image: Uri) {
+        runImageVision(
+            prompt = prompt,
+            runningText = "正在识别图片...",
+            loadImage = {
+                val bytes = ChatImageStore.read(getApplication(), image)
+                    ?: return@runImageVision null
+                ChatImageStore.store(getApplication(), bytes)
+            }
+        )
     }
 
     fun runDiagnostics(includeServerProbe: Boolean) {
@@ -453,6 +465,12 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
                                         .put("text", message.text)
                                         .put("from_user", message.fromUser)
                                         .put("timestamp", message.timestamp)
+                                        .apply {
+                                            message.imagePath?.let { put("image_path", it) }
+                                            message.thumbnailPath?.let {
+                                                put("thumbnail_path", it)
+                                            }
+                                        }
                                 )
                             }
                         })
@@ -565,7 +583,9 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
                         id = item.optLong("id", 0L),
                         text = text,
                         fromUser = item.optBoolean("from_user", false),
-                        timestamp = item.optLong("timestamp", 0L).takeIf { it > 0 } ?: now
+                        timestamp = item.optLong("timestamp", 0L).takeIf { it > 0 } ?: now,
+                        imagePath = item.optString("image_path").takeIf { it.isNotBlank() },
+                        thumbnailPath = item.optString("thumbnail_path").takeIf { it.isNotBlank() }
                     )
                 )
             }
@@ -615,6 +635,59 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
             } catch (error: Exception) {
                 VoiceSessionState.appendChat(
                     error.message ?: "视觉识别失败，请稍后重试",
+                    fromUser = false
+                )
+            } finally {
+                VoiceSessionState.updateConversation(currentText = "")
+                visionRunning.set(false)
+            }
+        }
+    }
+
+    private fun runImageVision(
+        prompt: String,
+        runningText: String,
+        loadImage: suspend () -> StoredChatImage?
+    ) {
+        val normalizedPrompt = prompt.trim().ifBlank { "描述这张图片的内容" }
+
+        if (!visionRunning.compareAndSet(false, true)) {
+            VoiceSessionState.appendChat("上一次视觉识别还在处理，请稍候", fromUser = false)
+            return
+        }
+
+        VoiceSessionState.updateConversation(currentText = runningText)
+        viewModelScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    val storedImage = loadImage()
+                        ?: return@withContext visionFailure("图片读取失败，请重新选择")
+                    VoiceSessionState.appendChat(
+                        normalizedPrompt,
+                        fromUser = true,
+                        imagePath = storedImage.fullPath,
+                        thumbnailPath = storedImage.thumbnailPath
+                    )
+                    if (!ensureVisionServiceReady()) {
+                        visionFailure("视觉分析服务暂未就绪，请先开启语音服务并完成连接")
+                    } else {
+                        VisionService.analyze(
+                            question = ScreenVisionPromptBuilder.buildCameraPrompt(
+                                normalizedPrompt,
+                                structuredOutput = false
+                            ),
+                            image = storedImage.uploadBytes,
+                            fileName = "chat-image.jpg"
+                        )
+                    }
+                }
+                VoiceSessionState.appendChat(
+                    directVisionText(result),
+                    fromUser = false
+                )
+            } catch (error: Exception) {
+                VoiceSessionState.appendChat(
+                    error.message ?: "图片识别失败，请稍后重试",
                     fromUser = false
                 )
             } finally {
