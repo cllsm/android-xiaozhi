@@ -877,15 +877,13 @@ class SystemOverlayService : Service() {
         setMusicIslandShown(state.active)
 
         musicTitleView.text = when {
-            state.loading && state.title.isBlank() -> "正在搜索歌曲..."
+            state.loading && state.title.isBlank() -> "正在搜索歌曲"
             state.hasTrack || state.loading -> state.title
             else -> ""
         }
-        musicSourceView.text = when {
-            state.loading && state.sourceName.isBlank() -> "多源匹配中"
-            state.hasTrack || state.loading -> state.sourceName
-            else -> ""
-        }
+        musicSourceView.text = listOf(state.playbackStatusLabel, state.sourceName)
+            .filter { it.isNotBlank() }
+            .joinToString(" · ")
         val paused = state.paused && state.hasTrack
         musicPlayPauseAction.text = if (paused) "▶" else "││"
         musicPlayPauseAction.contentDescription = if (paused) "继续播放" else "暂停音乐"

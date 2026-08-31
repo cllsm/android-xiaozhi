@@ -474,16 +474,22 @@ object NativeMusicController {
         }
         autoAdvanceEnabled = true
         val hasAdjacentTracks = MusicHistoryRepository.queueHasMultipleTracks()
+        val sourceName = selection.sourceName
         MusicPlaybackState.update {
             MusicRuntimeState(
                 loading = true,
                 title = selection.song.displayName,
-                sourceName = selection.sourceName,
+                sourceName = sourceName,
                 hasPrevious = hasAdjacentTracks,
                 hasNext = hasAdjacentTracks
             )
         }
-        return startPlayback(selection.playback.url, selection.playback.isPreview)
+        return startPlayback(
+            url = selection.playback.url,
+            isPreview = selection.playback.isPreview,
+            hasAdjacentTracks = hasAdjacentTracks,
+            sourceName = sourceName
+        )
     }
 
     private fun selectPlayableSong(
@@ -543,7 +549,12 @@ object NativeMusicController {
         }
     }
 
-    private fun startPlayback(url: String, isPreview: Boolean): String {
+    private fun startPlayback(
+        url: String,
+        isPreview: Boolean,
+        hasAdjacentTracks: Boolean,
+        sourceName: String
+    ): String {
         val prepared = CountDownLatch(1)
         var message = ""
         mainHandler.post {
@@ -562,14 +573,14 @@ object NativeMusicController {
                         hasTrack = true,
                         paused = false,
                         title = currentSong,
-                        sourceName = currentSourceName(),
-                        hasPrevious = MusicHistoryRepository.queueHasMultipleTracks(),
-                        hasNext = MusicHistoryRepository.queueHasMultipleTracks()
+                        sourceName = sourceName,
+                        hasPrevious = hasAdjacentTracks,
+                        hasNext = hasAdjacentTracks
                     )
                 }
                 MusicHistoryRepository.recordPlayback(
                     title = currentSong,
-                    sourceName = currentSourceName()
+                    sourceName = sourceName
                 )
                 message = if (isPreview) "正在试听：$currentSong" else "正在播放：$currentSong"
                 prepared.countDown()
