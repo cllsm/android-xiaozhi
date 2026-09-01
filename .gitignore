@@ -24,6 +24,10 @@ mcp-token.txt
 *.tmp
 *.temp
 *.bak
+t.mb
+
+# Local backups (debug snapshots, data archives, old APKs)
+backups/
 
 # OS
 .DS_Store
