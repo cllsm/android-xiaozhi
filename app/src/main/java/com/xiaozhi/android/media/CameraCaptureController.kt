@@ -13,10 +13,12 @@ import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.media.ImageReader
+import android.util.Log
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
 import android.view.Surface
+import com.xiaozhi.android.core.ImageCodecs
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -121,10 +123,12 @@ class CameraCaptureController(private val context: Context) {
                 for (index in bytes.indices) {
                     bytes[index] = buffer.get()
                 }
-                rotateIfNeeded(
-                    bytes,
-                    sensorOrientation
-                )
+                if (!ImageCodecs.looksLikeJpeg(bytes)) {
+                    Log.w(TAG, "Camera returned invalid JPEG, bytes=${bytes.size}")
+                    null
+                } else {
+                    rotateIfNeeded(bytes, sensorOrientation)
+                }
             }
         } catch (_: Exception) {
             null
@@ -177,6 +181,7 @@ class CameraCaptureController(private val context: Context) {
     }
 
     private companion object {
+        private const val TAG = "CameraCapture"
         private const val JPEG_QUALITY = 85
         private const val MAX_DIMENSION = 1920
         private const val PREFERRED_DIMENSION = 1280

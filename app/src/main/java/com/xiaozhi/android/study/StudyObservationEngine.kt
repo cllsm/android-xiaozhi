@@ -197,7 +197,7 @@ object StudyObservationEngine {
     private const val SWITCH_START_TIMEOUT_MS = 2_000L
     private const val MIN_INTERVAL_SECONDS = 3
     private const val MAX_INTERVAL_SECONDS = 30
-    private const val CAPTURE_ATTEMPTS = 2
+    private const val CAPTURE_ATTEMPTS = 3
     private const val CAPTURE_RETRY_DELAY_MS = 250L
     private const val TRIGGER_AUTO = "auto"
     private const val TRIGGER_SPEECH = "speech"
