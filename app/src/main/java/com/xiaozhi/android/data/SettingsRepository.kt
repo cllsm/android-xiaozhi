@@ -37,6 +37,7 @@ class SettingsRepository(private val context: Context) {
         val MusicDefaultQuality = stringPreferencesKey("music_default_quality")
         val DarkTheme = booleanPreferencesKey("dark_theme")
         val OverlayEnabled = booleanPreferencesKey("overlay_enabled")
+        val StudyCompanionEnabled = booleanPreferencesKey("study_companion_enabled")
         val ChatHistoryLimit = intPreferencesKey("chat_history_limit")
         val ConnectRetryEnabled = booleanPreferencesKey("connect_retry_enabled")
         val ConnectRetryCount = intPreferencesKey("connect_retry_count")
@@ -75,6 +76,7 @@ class SettingsRepository(private val context: Context) {
                 musicDefaultQuality = prefs[Keys.MusicDefaultQuality] ?: "320k",
                 darkTheme = prefs[Keys.DarkTheme] ?: true,
                 overlayEnabled = prefs[Keys.OverlayEnabled] ?: false,
+                studyCompanionEnabled = prefs[Keys.StudyCompanionEnabled] ?: false,
                 chatHistoryLimit = prefs[Keys.ChatHistoryLimit] ?: 200,
                 connectRetryEnabled = prefs[Keys.ConnectRetryEnabled] ?: true,
                 connectRetryCount = prefs[Keys.ConnectRetryCount] ?: 5,
@@ -103,6 +105,7 @@ class SettingsRepository(private val context: Context) {
             prefs[Keys.MusicDefaultQuality] = newState.musicDefaultQuality
             prefs[Keys.DarkTheme] = newState.darkTheme
             prefs[Keys.OverlayEnabled] = newState.overlayEnabled
+            prefs[Keys.StudyCompanionEnabled] = newState.studyCompanionEnabled
             prefs[Keys.ChatHistoryLimit] = newState.chatHistoryLimit
             prefs[Keys.ConnectRetryEnabled] = newState.connectRetryEnabled
             prefs[Keys.ConnectRetryCount] = newState.connectRetryCount

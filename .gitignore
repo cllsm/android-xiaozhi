@@ -17,6 +17,7 @@ local.properties
 *.keystore
 .env
 .env.*
+mcp-token.txt
 
 # Logs and temporary files
 *.log

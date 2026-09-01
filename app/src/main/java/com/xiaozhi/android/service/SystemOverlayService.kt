@@ -383,7 +383,7 @@ class SystemOverlayService : Service() {
             layoutParams = LinearLayout.LayoutParams(dp(8), dp(8))
         }
         statusView = TextView(this).apply {
-            text = "服务离线"
+            text = "点击开始对话"
             textSize = 11f
             setTextColor(COLOR_TEXT_SECONDARY)
             maxLines = 2
@@ -567,28 +567,21 @@ class SystemOverlayService : Service() {
 
     private fun attachPanelActions() {
         bindAction(primaryAction) {
-            val canControl = VoiceForegroundService.isRunning() && (
-                latestState.status == ConnectionStatus.Connected ||
-                    latestState.status == ConnectionStatus.Connecting
-                )
             when {
-                !canControl -> openApp()
+                !VoiceForegroundService.isRunning() -> openApp()
                 latestState.deviceState == DeviceState.Listening ->
                     VoiceForegroundService.stopListening(this)
-                latestState.status == ConnectionStatus.Connected -> {
+                else -> {
                     if (latestState.wakeWordEnabled) {
                         VoiceForegroundService.setWakeWordEnabled(this, false)
                     }
                     VoiceForegroundService.startListening(this)
                 }
-                else -> openApp()
             }
             setPanelExpanded(false)
         }
         bindAction(wakeAction) {
-            if (VoiceForegroundService.isRunning() &&
-                latestState.status == ConnectionStatus.Connected
-            ) {
+            if (VoiceForegroundService.isRunning()) {
                 VoiceForegroundService.setWakeWordEnabled(
                     this,
                     !latestState.wakeWordEnabled
@@ -826,7 +819,6 @@ class SystemOverlayService : Service() {
         val activeState = running && state.deviceState != DeviceState.Idle
         val targetColor = when {
             !running -> COLOR_MUTED
-            state.status == ConnectionStatus.Error -> COLOR_DANGER
             state.deviceState == DeviceState.Listening -> COLOR_SUCCESS
             state.deviceState == DeviceState.Speaking -> COLOR_WARNING
             else -> COLOR_PRIMARY
@@ -841,20 +833,24 @@ class SystemOverlayService : Service() {
             stopPulses()
         }
 
-        statusView.text = state.statusText.ifBlank {
-            if (running) "语音服务运行中" else "服务离线"
+        statusView.text = when {
+            !running -> "点击开始对话"
+            state.status == ConnectionStatus.ActivationRequired -> "等待设备激活"
+            state.deviceState == DeviceState.Listening -> "正在聆听"
+            state.deviceState == DeviceState.Speaking -> "正在回复"
+            state.wakeWordEnabled -> "唤醒词待命"
+            else -> "可开始对话"
         }
         primaryAction.text = when {
             !running -> "打开 App 启动"
             state.status == ConnectionStatus.ActivationRequired -> "打开 App 激活"
-            state.status == ConnectionStatus.Connecting -> "连接中"
             state.deviceState == DeviceState.Listening -> "停止聆听"
             state.wakeWordEnabled -> "手动聆听"
             else -> "开始聆听"
         }
         wakeAction.text = if (state.wakeWordEnabled) "唤醒词 开" else "唤醒词 关"
 
-        val wakeEnabled = running && state.status == ConnectionStatus.Connected
+        val wakeEnabled = running
         val abortEnabled = state.deviceState == DeviceState.Speaking
         val stopEnabled = running
         setActionEnabled(primaryAction, true)

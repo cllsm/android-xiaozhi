@@ -23,6 +23,9 @@ class McpDispatcher(
         add(CameraTool(context))
         add(WeatherTool())
         add(ForecastTool())
+        if (settings.studyCompanionEnabled) {
+            add(StudyCompanionCheckTool())
+        }
         if (settings.musicEnabled) {
             NativeMusicController.configure(settings)
             add(MusicSearchTool())
@@ -159,13 +162,20 @@ class McpDispatcher(
             is String -> value
             else -> value.toString()
         }
+        // 截断过长的工具结果（如视觉分析返回的大段 JSON），
+        // 避免云端等待与总结耗时超出 MCP 工具调用超时后不再播报
+        val clipped = if (text.length > MAX_RESULT_TEXT_LENGTH) {
+            text.take(MAX_RESULT_TEXT_LENGTH) + "…（内容过长已截断）"
+        } else {
+            text
+        }
         return JSONObject()
             .put(
                 "content",
                 JSONArray().put(
                     JSONObject()
                         .put("type", "text")
-                        .put("text", text)
+                        .put("text", clipped)
                 )
             )
             .put("isError", false)
@@ -200,5 +210,6 @@ class McpDispatcher(
         const val INTERNAL_ERROR = -32603
         const val JSON_OVERHEAD = 100
         const val MAX_PAGE_SIZE = 8_000
+        const val MAX_RESULT_TEXT_LENGTH = 1_200
     }
 }

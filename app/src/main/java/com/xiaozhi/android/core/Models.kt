@@ -67,6 +67,7 @@ data class SettingsState(
     val musicDefaultQuality: String = "320k",
     val darkTheme: Boolean = true,
     val overlayEnabled: Boolean = false,
+    val studyCompanionEnabled: Boolean = false,
     val chatHistoryLimit: Int = 200,
     val connectRetryEnabled: Boolean = true,
     val connectRetryCount: Int = 5,
