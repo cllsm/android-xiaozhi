@@ -114,8 +114,14 @@ class XiaozhiWebSocketClient(
         return delivered
     }
 
-    fun sendDeviceCallSpeech(text: String): Boolean {
-        return sendText("[device_call]$text")
+    fun sendVisionSpeechRequest(): Boolean {
+        val delivered = sendText(VISION_SPEECH_REQUEST)
+        Log.i(
+            TAG,
+            "Vision speech request sent, delivered=$delivered, " +
+                "length=${VISION_SPEECH_REQUEST.length}"
+        )
+        return delivered
     }
 
     fun sendStopListening(): Boolean {
@@ -187,6 +193,7 @@ class XiaozhiWebSocketClient(
         private const val CHANNELS = 1
         private const val FRAME_DURATION_MS = 20
         private const val LISTENING_MODE_MANUAL = "manual"
+        private const val VISION_SPEECH_REQUEST = "读取屏幕识别结果"
         private const val NORMAL_CLOSE_CODE = 1000
 
         private val sharedClient = OkHttpClient.Builder()

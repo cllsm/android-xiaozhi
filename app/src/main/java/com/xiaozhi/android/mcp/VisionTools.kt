@@ -9,7 +9,7 @@ import org.json.JSONObject
 class LatestVisionResultTool : McpTool {
     override val definition = McpToolDefinition(
         name = "get_latest_vision_result",
-        description = "Read the latest cached vision result without recapturing."
+        description = "Read the latest cached vision result without recapturing. Use this when the user asks to read the screen recognition result."
     )
 
     override fun call(arguments: JSONObject): Any? {
