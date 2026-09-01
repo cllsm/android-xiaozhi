@@ -40,6 +40,7 @@ class SettingsRepository(private val context: Context) {
         val ThemeModeKey = stringPreferencesKey("theme_mode")
         val MusicRememberSelection = booleanPreferencesKey("music_remember_selection")
         val OverlayEnabled = booleanPreferencesKey("overlay_enabled")
+        val StudyCompanionEnabled = booleanPreferencesKey("study_companion_enabled")
         val MusicIslandEnabled = booleanPreferencesKey("music_island_enabled")
         val ChatHistoryLimit = intPreferencesKey("chat_history_limit")
         val ConnectRetryEnabled = booleanPreferencesKey("connect_retry_enabled")
@@ -84,6 +85,7 @@ class SettingsRepository(private val context: Context) {
                     ?: ThemeMode.System,
                 musicRememberSelection = prefs[Keys.MusicRememberSelection] ?: true,
                 overlayEnabled = prefs[Keys.OverlayEnabled] ?: false,
+                studyCompanionEnabled = prefs[Keys.StudyCompanionEnabled] ?: false,
                 musicIslandEnabled = prefs[Keys.MusicIslandEnabled] ?: true,
                 chatHistoryLimit = prefs[Keys.ChatHistoryLimit] ?: 200,
                 connectRetryEnabled = prefs[Keys.ConnectRetryEnabled] ?: true,
@@ -114,6 +116,7 @@ class SettingsRepository(private val context: Context) {
             prefs[Keys.ThemeModeKey] = newState.themeMode.name
             prefs[Keys.MusicRememberSelection] = newState.musicRememberSelection
             prefs[Keys.OverlayEnabled] = newState.overlayEnabled
+            prefs[Keys.StudyCompanionEnabled] = newState.studyCompanionEnabled
             prefs[Keys.MusicIslandEnabled] = newState.musicIslandEnabled
             prefs[Keys.ChatHistoryLimit] = newState.chatHistoryLimit
             prefs[Keys.ConnectRetryEnabled] = newState.connectRetryEnabled

@@ -66,8 +66,12 @@ object ScreenCaptureController {
     fun capture(context: Context): ByteArray? {
         val activeProjection = projection ?: return null
         val metrics = context.resources.displayMetrics
-        val width = metrics.widthPixels.coerceAtLeast(1)
-        val height = metrics.heightPixels.coerceAtLeast(1)
+        // 按最长边限制缩放采集：VirtualDisplay 会自动缩放渲染到低分辨率 surface，
+        // 减小图片体积，避免视觉分析上传耗时过长导致云端 MCP 工具调用超时
+        val (width, height) = scaledSize(
+            metrics.widthPixels.coerceAtLeast(1),
+            metrics.heightPixels.coerceAtLeast(1)
+        )
         var reader: ImageReader? = null
         var display: VirtualDisplay? = null
         var thread: HandlerThread? = null
@@ -137,7 +141,7 @@ object ScreenCaptureController {
     }
 
     private const val MAX_IMAGES = 2
-    private const val JPEG_QUALITY = 85
+    private const val JPEG_QUALITY = 80
     private const val CAPTURE_TIMEOUT_MS = 1_200L
     private const val FRAME_WAIT_MS = 40L
 

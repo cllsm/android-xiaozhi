@@ -80,6 +80,7 @@ data class SettingsState(
     val themeMode: ThemeMode = ThemeMode.System,
     val musicRememberSelection: Boolean = true,
     val overlayEnabled: Boolean = false,
+    val studyCompanionEnabled: Boolean = false,
     val musicIslandEnabled: Boolean = true,
     val chatHistoryLimit: Int = 200,
     val connectRetryEnabled: Boolean = true,

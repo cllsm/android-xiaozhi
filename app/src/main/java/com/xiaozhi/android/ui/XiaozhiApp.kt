@@ -9,6 +9,7 @@ import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -37,9 +38,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -70,8 +74,10 @@ import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.HealthAndSafety
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MusicNote
@@ -107,6 +113,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -120,11 +127,13 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.ImeAction
@@ -155,6 +164,9 @@ import com.xiaozhi.android.media.ScreenCaptureController
 import com.xiaozhi.android.service.MediaProjectionForegroundService
 import com.xiaozhi.android.service.VoiceForegroundService
 import com.xiaozhi.android.ui.theme.XiaozhiTheme
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -255,7 +267,8 @@ private fun AppContent(
                         onAnalyzeScreen = viewModel::analyzeScreen,
                         onAnalyzeCamera = viewModel::analyzeCamera,
                         onAnalyzeImage = viewModel::analyzeImage,
-                        onOpenRecentMusic = { screen = Screen.RecentMusic }
+                        onOpenRecentMusic = { screen = Screen.RecentMusic },
+                        onOpenStudy = { screen = Screen.Study }
                     )
                     Screen.Study -> StudyScreen(
                         viewModel = viewModel,
@@ -541,14 +554,14 @@ private fun HomeScreen(
     onAnalyzeScreen: (String) -> Unit,
     onAnalyzeCamera: (String) -> Unit,
     onAnalyzeImage: (String, Uri) -> Unit,
-    onOpenRecentMusic: () -> Unit
+    onOpenRecentMusic: () -> Unit,
+    onOpenStudy: () -> Unit
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     var startRequested by remember { mutableStateOf(false) }
     var textDraft by remember { mutableStateOf("") }
     var dismissedActivationCode by remember { mutableStateOf("") }
-    var dismissedError by remember { mutableStateOf("") }
     var pendingScreenPrompt by remember { mutableStateOf<String?>(null) }
     var pendingText by remember { mutableStateOf<String?>(null) }
     var pendingTextNeedsCamera by remember { mutableStateOf(false) }
@@ -721,9 +734,6 @@ private fun HomeScreen(
         runtimeState.status != ConnectionStatus.Disconnected
     val showActivationDialog = runtimeState.activationCode.isNotBlank() &&
         runtimeState.activationCode != dismissedActivationCode
-    val showError = runtimeState.status == ConnectionStatus.Error &&
-        runtimeState.statusText.isNotBlank() &&
-        runtimeState.statusText != dismissedError
 
     fun requestScreenPrompt(prompt: String) {
         if (ScreenCaptureController.hasPermission()) {
@@ -741,6 +751,9 @@ private fun HomeScreen(
     }
 
     fun startVoiceAction() {
+        val microphoneReady = context.checkSelfPermission(
+            Manifest.permission.RECORD_AUDIO
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
         if (serviceRunning &&
             runtimeState.status == ConnectionStatus.Error &&
             !runtimeState.waitingForNetwork
@@ -750,6 +763,13 @@ private fun HomeScreen(
             runtimeState.status == ConnectionStatus.Connected &&
             runtimeState.deviceState == DeviceState.Idle
         ) {
+            if (settings.wakeWordEnabled) {
+                VoiceForegroundService.setWakeWordEnabled(context, false)
+            }
+            VoiceForegroundService.startListening(context)
+        } else if (microphoneReady) {
+            VoiceForegroundService.start(context)
+            startRequested = true
             if (settings.wakeWordEnabled) {
                 VoiceForegroundService.setWakeWordEnabled(context, false)
             }
@@ -844,6 +864,52 @@ private fun HomeScreen(
             runtimeState = runtimeState,
             serviceRunning = serviceRunning
         )
+
+        if (settings.studyCompanionEnabled) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(16f / 9f)
+                    .padding(horizontal = 16.dp, vertical = 10.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                     .clickable(onClick = onOpenStudy)
+            ) {
+                StudyCameraPreview(modifier = Modifier.fillMaxSize())
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(10.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color.Black.copy(alpha = 0.55f))
+                        .padding(horizontal = 8.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.error)
+                    )
+                    Text(
+                        text = "陪学中",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White
+                    )
+                }
+                Icon(
+                    imageVector = Icons.Filled.Fullscreen,
+                    contentDescription = "全屏",
+                    tint = Color.White,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(10.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color.Black.copy(alpha = 0.55f))
+                        .padding(6.dp)
+                )
+            }
+        }
 
         Box(
             modifier = Modifier
@@ -1129,6 +1195,339 @@ private fun HomeScreen(
 }
 
 @Composable
+private fun StudyCompanionScreen(
+    chat: List<ChatMessage>,
+    runtimeState: VoiceRuntimeState,
+    onSendText: (String) -> Boolean,
+    onBack: () -> Unit
+) {
+    BackHandler(onBack = onBack)
+    val context = LocalContext.current
+    val view = LocalView.current
+    var textDraft by remember { mutableStateOf("") }
+    var startRequested by remember { mutableStateOf(false) }
+    var pendingText by remember { mutableStateOf<String?>(null) }
+    var pendingVoice by remember { mutableStateOf(false) }
+    val chatListState = rememberLazyListState()
+    val visibleChat = remember(chat) { chat.takeLast(30) }
+    val serviceRunning = startRequested ||
+        runtimeState.status != ConnectionStatus.Disconnected
+
+    DisposableEffect(Unit) {
+        val window = (view.context as Activity).window
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        val controller = WindowInsetsControllerCompat(window, view)
+        controller.hide(WindowInsetsCompat.Type.systemBars())
+        controller.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        onDispose {
+            controller.show(WindowInsetsCompat.Type.systemBars())
+            WindowCompat.setDecorFitsSystemWindows(window, true)
+        }
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        if (grants[Manifest.permission.RECORD_AUDIO] == true) {
+            VoiceForegroundService.start(context)
+            startRequested = true
+            pendingText?.let(onSendText)
+            if (pendingVoice) VoiceForegroundService.startListening(context)
+        }
+        pendingText = null
+        pendingVoice = false
+    }
+
+    fun sendFromLive(text: String) {
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            VoiceForegroundService.start(context)
+            startRequested = true
+            onSendText(text)
+        } else {
+            pendingText = text
+            pendingVoice = false
+            permissionLauncher.launch(
+                buildList {
+                    add(Manifest.permission.RECORD_AUDIO)
+                    add(Manifest.permission.CAMERA)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        add(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }.toTypedArray()
+            )
+        }
+    }
+
+    fun startVoice() {
+        if (serviceRunning &&
+            runtimeState.status == ConnectionStatus.Connected &&
+            runtimeState.deviceState == DeviceState.Idle
+        ) {
+            VoiceForegroundService.startListening(context)
+        } else {
+            pendingText = null
+            pendingVoice = true
+            permissionLauncher.launch(
+                buildList {
+                    add(Manifest.permission.RECORD_AUDIO)
+                    add(Manifest.permission.CAMERA)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        add(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }.toTypedArray()
+            )
+        }
+    }
+
+    LaunchedEffect(visibleChat.lastOrNull()?.id, runtimeState.currentText) {
+        if (visibleChat.isNotEmpty()) chatListState.animateScrollToItem(visibleChat.lastIndex)
+    }
+
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        StudyCameraPreview(modifier = Modifier.fillMaxSize())
+        Box(
+            modifier = Modifier.fillMaxSize().background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        Color.Black.copy(alpha = 0.45f),
+                        Color.Transparent,
+                        Color.Black.copy(alpha = 0.15f),
+                        Color.Black.copy(alpha = 0.82f)
+                    )
+                )
+            )
+        )
+        StudyLiveTopBar(onBack)
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .imePadding()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp),
+                state = chatListState,
+                contentPadding = PaddingValues(vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(7.dp)
+            ) {
+                items(visibleChat, key = { it.id }) { message ->
+                    StudyLiveChatItem(message)
+                }
+                if (runtimeState.currentText.isNotBlank()) {
+                    item(key = "live-reply") {
+                        StudyLiveText(
+                            speaker = "小智",
+                            text = runtimeState.currentText,
+                            fromUser = false
+                        )
+                    }
+                }
+            }
+            StudyLiveInput(
+                value = textDraft,
+                runtimeState = runtimeState,
+                onValueChange = { textDraft = it },
+                onSend = {
+                    val text = textDraft.trim()
+                    if (text.isNotEmpty()) {
+                        sendFromLive(text)
+                        textDraft = ""
+                    }
+                },
+                onVoiceClick = {
+                    if (runtimeState.deviceState == DeviceState.Listening) {
+                        VoiceForegroundService.stopListening(context)
+                    } else if (runtimeState.deviceState == DeviceState.Speaking) {
+                        VoiceForegroundService.abortSpeaking()
+                    } else {
+                        startVoice()
+                    }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun StudyLiveTopBar(onBack: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        RoundIconButton(
+            icon = {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "退出全屏",
+                    tint = Color.White
+                )
+            },
+            onClick = onBack
+        )
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color.Black.copy(alpha = 0.58f))
+                .padding(horizontal = 9.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Filled.LiveTv,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(15.dp)
+            )
+            Text(
+                text = "陪学直播",
+                style = MaterialTheme.typography.labelMedium,
+                color = Color.White
+            )
+        }
+    }
+}
+
+@Composable
+private fun StudyLiveChatItem(message: ChatMessage) {
+    StudyLiveText(
+        speaker = if (message.fromUser) "主人翁" else "小智",
+        text = message.text,
+        fromUser = message.fromUser
+    )
+}
+
+@Composable
+private fun StudyLiveText(
+    speaker: String,
+    text: String,
+    fromUser: Boolean
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = if (fromUser) Alignment.End else Alignment.Start
+    ) {
+        Text(
+            text = speaker,
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.White.copy(alpha = 0.72f)
+        )
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color.White,
+            modifier = Modifier
+                .widthIn(max = 320.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(
+                    if (fromUser) {
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.82f)
+                    } else {
+                        Color.Black.copy(alpha = 0.58f)
+                    }
+                )
+                .padding(horizontal = 11.dp, vertical = 8.dp)
+        )
+    }
+}
+
+@Composable
+private fun StudyLiveInput(
+    value: String,
+    runtimeState: VoiceRuntimeState,
+    onValueChange: (String) -> Unit,
+    onSend: () -> Unit,
+    onVoiceClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = Modifier
+                .weight(1f)
+                .height(46.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color.Black.copy(alpha = 0.58f))
+                .padding(horizontal = 13.dp),
+            textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color.White),
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+            keyboardActions = KeyboardActions(onSend = { onSend() }),
+            decorationBox = { field ->
+                Box(contentAlignment = Alignment.CenterStart) {
+                    if (value.isEmpty()) {
+                        Text(
+                            "给小智发消息",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color.White.copy(alpha = 0.65f)
+                        )
+                    }
+                    field()
+                }
+            }
+        )
+        Box(
+            modifier = Modifier
+                .size(46.dp)
+                .clip(CircleShape)
+                .background(Color.White.copy(alpha = 0.18f))
+                .clickable(onClick = onVoiceClick),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = if (
+                    runtimeState.deviceState == DeviceState.Listening ||
+                    runtimeState.deviceState == DeviceState.Speaking
+                ) {
+                    Icons.Filled.Stop
+                } else {
+                    Icons.Filled.Mic
+                },
+                contentDescription = if (
+                    runtimeState.deviceState == DeviceState.Listening ||
+                    runtimeState.deviceState == DeviceState.Speaking
+                ) {
+                    "停止语音"
+                } else {
+                    "开始语音"
+                },
+                tint = Color.White
+            )
+        }
+        Box(
+            modifier = Modifier
+                .size(46.dp)
+                .clip(CircleShape)
+                .background(
+                    if (value.isBlank()) Color.White.copy(alpha = 0.18f)
+                    else MaterialTheme.colorScheme.primary
+                )
+                .clickable(onClick = onSend),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.AutoMirrored.Filled.Send,
+                contentDescription = "发送",
+                tint = Color.White
+            )
+        }
+    }
+}
+
+@Composable
 private fun FloatingBall(
     runtimeState: VoiceRuntimeState,
     serviceRunning: Boolean,
@@ -1155,7 +1554,7 @@ private fun FloatingBall(
                 add(Triple("⏹", "停止聆听", onStop))
             runtimeState.deviceState == DeviceState.Speaking ->
                 add(Triple("✋", "打断回复", onAbort))
-            else -> add(Triple("⏳", "连接中...", {}))
+            else -> add(Triple("🎤", "开始对话", onStart))
         }
         if (serviceRunning &&
             runtimeState.status == ConnectionStatus.Connected &&
@@ -1237,7 +1636,7 @@ private fun FloatingBall(
                     text = when (runtimeState.deviceState) {
                         DeviceState.Listening -> "🎙"
                         DeviceState.Speaking -> "🔊"
-                        DeviceState.Connecting -> "⏳"
+                        DeviceState.Connecting -> "💬"
                         DeviceState.Idle -> "💬"
                     },
                     fontSize = 20.sp
@@ -1449,7 +1848,7 @@ private fun homeStatusLabel(
     serviceRunning: Boolean
 ): String {
     return when {
-        !serviceRunning -> "待启动"
+        !serviceRunning -> "可开始对话"
         state.status == ConnectionStatus.ActivationRequired -> "待激活"
         state.waitingForNetwork -> "等待网络恢复"
         state.status == ConnectionStatus.Connecting ||
@@ -1458,7 +1857,8 @@ private fun homeStatusLabel(
         state.deviceState == DeviceState.Speaking -> "正在回复"
         state.status == ConnectionStatus.Error ->
             if (state.autoRecoveryEnabled) "断开 · 自动恢复" else "断开 · 可手动重连"
-        state.status == ConnectionStatus.Connected -> "已连接"
+        state.status == ConnectionStatus.Connected ->
+            if (state.wakeWordEnabled) "唤醒词待命" else "已连接"
         else -> "服务运行中"
     }
 }
@@ -1469,14 +1869,10 @@ private fun homeStatusColor(
     serviceRunning: Boolean
 ): Color {
     return when {
-        !serviceRunning -> MaterialTheme.colorScheme.onSurfaceVariant
-        state.status == ConnectionStatus.ActivationRequired ||
-            state.status == ConnectionStatus.Error -> MaterialTheme.colorScheme.error
-        state.status == ConnectionStatus.Connecting ||
-            state.deviceState == DeviceState.Connecting -> MaterialTheme.colorScheme.secondary
+        !serviceRunning -> MaterialTheme.colorScheme.primary
+        state.status == ConnectionStatus.ActivationRequired -> MaterialTheme.colorScheme.error
         state.deviceState == DeviceState.Listening -> MaterialTheme.colorScheme.tertiary
         state.deviceState == DeviceState.Speaking -> MaterialTheme.colorScheme.secondary
-        state.status == ConnectionStatus.Connected -> MaterialTheme.colorScheme.tertiary
         else -> MaterialTheme.colorScheme.primary
     }
 }
@@ -1561,12 +1957,6 @@ private fun PrimaryVoiceButton(
     val onClick: () -> Unit
 
     when {
-        !serviceRunning -> {
-            label = "开始对话"
-            containerColor = MaterialTheme.colorScheme.primary
-            contentColor = MaterialTheme.colorScheme.onPrimary
-            onClick = onStart
-        }
         runtimeState.deviceState == DeviceState.Speaking -> {
             label = "正在回复 (点击打断)"
             containerColor = MaterialTheme.colorScheme.secondary
@@ -1579,19 +1969,24 @@ private fun PrimaryVoiceButton(
             contentColor = MaterialTheme.colorScheme.onTertiary
             onClick = onStop
         }
-        runtimeState.status == ConnectionStatus.Connecting ||
-            runtimeState.status == ConnectionStatus.ActivationRequired -> {
-            label = "正在连接服务器..."
+        runtimeState.status == ConnectionStatus.ActivationRequired -> {
+            label = "等待设备激活"
             containerColor = MaterialTheme.colorScheme.surfaceVariant
             contentColor = MaterialTheme.colorScheme.onSurface
             outlineColor = MaterialTheme.colorScheme.outline
             onClick = {}
         }
+        !serviceRunning -> {
+            label = "开始对话"
+            containerColor = MaterialTheme.colorScheme.primary
+            contentColor = MaterialTheme.colorScheme.onPrimary
+            onClick = onStart
+        }
         settings.wakeWordEnabled -> {
-            label = "正在监听唤醒词... 点击停止"
-            containerColor = MaterialTheme.colorScheme.tertiary
-            contentColor = MaterialTheme.colorScheme.onTertiary
-            onClick = onStop
+            label = "唤醒词待命"
+            containerColor = MaterialTheme.colorScheme.primary
+            contentColor = MaterialTheme.colorScheme.onPrimary
+            onClick = onStart
         }
         else -> {
             label = "开始对话"
@@ -1617,19 +2012,11 @@ private fun PrimaryVoiceButton(
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        if (runtimeState.status == ConnectionStatus.Connecting) {
-            CircularProgressIndicator(
-                color = contentColor,
-                strokeWidth = 2.dp,
-                modifier = Modifier.size(20.dp)
-            )
-        } else {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.bodyLarge,
-                color = contentColor
-            )
-        }
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyLarge,
+            color = contentColor
+        )
     }
 }
 
@@ -2345,6 +2732,18 @@ private fun SettingsScreen(
                         ?: ThemeMode.System
                     draft = draft.copy(themeMode = newValue)
                     onUpdateSettings(draft)
+                }
+            }
+            }
+
+            if (sectionVisible(settingsQuery, "陪学", "陪学 视频 预览 全屏 直播")) {
+                SettingsSection("陪学") {
+                SwitchSettingRow(
+                    label = "开启陪学模式",
+                    hint = "首页显示视频预览，可进入全屏直播式对话",
+                    checked = draft.studyCompanionEnabled
+                ) {
+                    draft = draft.copy(studyCompanionEnabled = it)
                 }
             }
             }

@@ -3,8 +3,10 @@ package com.xiaozhi.android.service
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.app.PendingIntent
@@ -14,6 +16,7 @@ import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.xiaozhi.android.MainActivity
@@ -61,6 +64,20 @@ class VoiceForegroundService : LifecycleService() {
     private var connectionJob: kotlinx.coroutines.Job? = null
     private val recoveryRequests = Channel<RecoveryTrigger>(Channel.CONFLATED)
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private val connectionRequests = ConcurrentLinkedQueue<Unit>()
+    private val pendingWakeWords = ConcurrentLinkedQueue<String>()
+    private val standbyListenerLock = Any()
+    private var standbyAudioInput: AudioInputEngine? = null
+    private var standbyWakeWordEngine: SherpaWakeWordEngine? = null
+    private val deviceWakeReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == Intent.ACTION_SCREEN_ON ||
+                intent?.action == Intent.ACTION_USER_PRESENT
+            ) {
+                requestConnection()
+            }
+            }
+        }
     private lateinit var settingsRepository: SettingsRepository
     private lateinit var identityRepository: DeviceIdentityRepository
     private val otaClient = OtaClient()
@@ -88,6 +105,19 @@ class VoiceForegroundService : LifecycleService() {
             startForeground(NOTIFICATION_ID, buildNotification())
         }
         acquireWakeLock()
+        val wakeIntentFilter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(
+                deviceWakeReceiver,
+                wakeIntentFilter,
+                Context.RECEIVER_NOT_EXPORTED
+            )
+        } else {
+            registerReceiver(deviceWakeReceiver, wakeIntentFilter)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -116,9 +146,7 @@ class VoiceForegroundService : LifecycleService() {
         if (intent?.action == ACTION_RELOAD_WAKE_WORD) {
             conversationCommands.add(COMMAND_RELOAD_WAKE_WORD)
         }
-        if (active.compareAndSet(false, true) && connectionJob == null) {
-            startConnectionLoop()
-        }
+        requestConnection()
         return START_STICKY
     }
 
@@ -129,9 +157,13 @@ class VoiceForegroundService : LifecycleService() {
         activeWebSocket.set(null)
         pendingTexts.clear()
         conversationCommands.clear()
+        pendingWakeWords.clear()
+        connectionRequests.clear()
         connectionJob?.cancel()
         connectionJob = null
         unregisterNetworkRecoveryListener()
+        stopStandbyWakeListener()
+        runCatching { unregisterReceiver(deviceWakeReceiver) }
         wakeLock?.let { lock ->
             if (lock.isHeld) lock.release()
         }
@@ -142,7 +174,14 @@ class VoiceForegroundService : LifecycleService() {
 
     override fun onBind(intent: Intent): IBinder? = super.onBind(intent)
 
-    private fun startConnectionLoop() {
+    private fun requestConnection() {
+        synchronized(standbyListenerLock) {
+            stopStandbyWakeListener()
+            connectionRequests.add(Unit)
+            if (!active.compareAndSet(false, true)) return
+        }
+
+        connectionJob?.cancel()
         connectionJob = lifecycleScope.launch {
             var identity = identityRepository.ensureIdentity()
             VoiceSessionState.updateRecovery(
@@ -163,16 +202,21 @@ class VoiceForegroundService : LifecycleService() {
             var consecutiveFailures = 0
 
             suspend fun waitForRecovery(timeoutMillis: Long? = reconnectDelay): RecoveryTrigger {
-                val trigger = timeoutMillis?.let { timeout ->
-                    withTimeoutOrNull(timeout) { recoveryRequests.receive() }
-                } ?: recoveryRequests.receive()
-                return trigger ?: RecoveryTrigger.TIMER
+                val deadline = timeoutMillis?.let { SystemClock.elapsedRealtime() + it }
+                while (true) {
+                    recoveryRequests.tryReceive().getOrNull()?.let { return it }
+                    if (connectionRequests.poll() != null) return RecoveryTrigger.MANUAL
+                    deadline?.let { end ->
+                        if (SystemClock.elapsedRealtime() >= end) return RecoveryTrigger.TIMER
+                    }
+                    delay(NETWORK_RECOVERY_POLL_MS.coerceAtMost(RECONNECT_POLL_MS))
+                }
             }
 
             suspend fun recoverAfterFailure(
                 reason: String,
                 retrySettings: SettingsState
-            ) {
+            ): Boolean {
                 consecutiveFailures += 1
                 val retryLimit = ConnectionRecoveryPolicy.normalizeRetryLimit(
                     retrySettings.connectRetryCount
@@ -222,6 +266,14 @@ class VoiceForegroundService : LifecycleService() {
                         MAX_RECONNECT_DELAY_MS
                     )
                 }
+                val shouldContinue = trigger == RecoveryTrigger.MANUAL ||
+                    trigger == RecoveryTrigger.NETWORK ||
+                    (
+                        retrySettings.connectRetryEnabled &&
+                            consecutiveFailures < retryLimit
+                        )
+                if (!shouldContinue) enterStandby()
+                return shouldContinue
             }
 
             while (isActive && active.get()) {
@@ -305,7 +357,7 @@ class VoiceForegroundService : LifecycleService() {
                         deviceState = DeviceState.Connecting
                     )
                     if (config.websocketUrl.isBlank() || config.websocketToken.isBlank()) {
-                        recoverAfterFailure("OTA 未返回完整 WebSocket 配置", settings)
+                        if (!recoverAfterFailure("OTA 未返回完整 WebSocket 配置", settings)) break
                         continue
                     }
                     settingsRepository.update(
@@ -327,22 +379,91 @@ class VoiceForegroundService : LifecycleService() {
                             )
                         )
                     } else {
-                        recoverAfterFailure(
+                        if (!recoverAfterFailure(
                             VoiceSessionState.state.value.statusText,
                             settings
-                        )
+                        )) break
                         continue
                     }
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
                     val retrySettings = settingsRepository.settings.first()
-                    recoverAfterFailure(
+                    if (!recoverAfterFailure(
                         UserErrorMessages.from(error.message ?: "网络连接失败"),
                         retrySettings
-                    )
+                    )) break
                 }
             }
+        }
+    }
+
+    private suspend fun enterStandby() {
+        active.set(false)
+        val settings = settingsRepository.settings.first()
+        VoiceSessionState.update(
+            status = ConnectionStatus.Disconnected,
+            statusText = "小智待命",
+            deviceState = DeviceState.Idle
+        )
+        updateNotification(VoiceSessionState.state.value.statusText)
+        startStandbyWakeListener(settings)
+    }
+
+    private fun startStandbyWakeListener(settings: SettingsState) {
+        if (!settings.wakeWordEnabled ||
+            checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+
+        synchronized(standbyListenerLock) {
+            if (active.get()) return
+            if (standbyAudioInput != null || standbyWakeWordEngine != null) return
+
+            standbyWakeWordEngine = SherpaWakeWordEngine(
+                context = this,
+                settings = settings,
+                onDetected = { keyword ->
+                    pendingWakeWords.add(keyword)
+                    conversationCommands.add(COMMAND_START_LISTENING)
+                    requestConnection()
+                },
+                onError = { message ->
+                    VoiceSessionState.update(
+                        status = ConnectionStatus.Disconnected,
+                        statusText = "唤醒词待命：$message"
+                    )
+                }
+            )
+            standbyAudioInput = AudioInputEngine(
+                onPacket = {},
+                onSamples = { samples ->
+                    standbyWakeWordEngine?.process(samples)
+                },
+                initialSendingEnabled = false,
+                aecEnabled = settings.aecEnabled
+            )
+            standbyAudioInput?.start()
+        }
+    }
+
+    private fun stopStandbyWakeListener() {
+        synchronized(standbyListenerLock) {
+            standbyAudioInput?.stop()
+            standbyWakeWordEngine?.close()
+            standbyAudioInput = null
+            standbyWakeWordEngine = null
+        }
+    }
+
+    private suspend fun waitBeforeReconnect(timeoutMs: Long) {
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        while (SystemClock.elapsedRealtime() < deadline) {
+            if (connectionRequests.poll() != null) return
+            val remaining = deadline - SystemClock.elapsedRealtime()
+            delay(remaining.coerceAtMost(RECONNECT_POLL_MS))
         }
     }
 
@@ -493,6 +614,7 @@ class VoiceForegroundService : LifecycleService() {
                     }
                     audioOutput?.start()
                     audioInput?.start()
+                    drainPendingWakeWords(socket)
                     drainPendingTexts(socket)
                     updateNotification(VoiceSessionState.state.value.statusText)
                     hello.complete(true)
@@ -669,18 +791,15 @@ class VoiceForegroundService : LifecycleService() {
             updateNotification(VoiceSessionState.state.value.statusText)
         }
 
-        val connected = withTimeoutOrNull(HELLO_TIMEOUT_MS) { hello.await() } ?: false
-        if (!connected) {
-            socket.close()
-            stopAudio()
-            wakeModeJob?.cancel()
-            clearActiveSocket(socket)
-            VoiceSessionState.update(
-                status = ConnectionStatus.Error,
-                statusText = "等待服务端 hello 超时"
-            )
-            return false
-        }
+        try {
+            val connected = withTimeoutOrNull(HELLO_TIMEOUT_MS) { hello.await() } ?: false
+            if (!connected) {
+                VoiceSessionState.update(
+                    status = ConnectionStatus.Error,
+                    statusText = "等待服务端 hello 超时"
+                )
+                return false
+            }
 
         wakeModeJob = lifecycleScope.launch {
             while (isActive) {
@@ -732,11 +851,13 @@ class VoiceForegroundService : LifecycleService() {
             }
         }
 
-        closed.await()
-        wakeModeJob?.cancel()
-        stopAudio()
-        socket.close()
-        clearActiveSocket(socket)
+            closed.await()
+        } finally {
+            wakeModeJob?.cancel()
+            stopAudio()
+            socket.close()
+            clearActiveSocket(socket)
+        }
         return false
     }
 
@@ -756,8 +877,8 @@ class VoiceForegroundService : LifecycleService() {
             )
             updateNotification(VoiceSessionState.state.value.statusText)
         }
-        if (active.get() && connectionJob == null) {
-            startConnectionLoop()
+        if (!active.get()) {
+            requestConnection()
         }
     }
 
@@ -786,6 +907,16 @@ class VoiceForegroundService : LifecycleService() {
         return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 
+    private fun drainPendingWakeWords(socket: XiaozhiWebSocketClient) {
+        while (true) {
+            val keyword = pendingWakeWords.poll() ?: break
+            if (!socket.sendWakeWordDetected(keyword)) {
+                pendingWakeWords.add(keyword)
+                break
+            }
+        }
+    }
+
     private fun drainPendingTexts(socket: XiaozhiWebSocketClient) {
         while (true) {
             val text = pendingTexts.poll() ?: break
@@ -801,6 +932,7 @@ class VoiceForegroundService : LifecycleService() {
 
     private fun stopVoiceService() {
         active.set(false)
+        stopStandbyWakeListener()
         connectionJob?.cancel()
         connectionJob = null
         VoiceSessionState.update(
@@ -835,7 +967,7 @@ class VoiceForegroundService : LifecycleService() {
         )
     }
 
-    private fun buildNotification(text: String = "正在启动语音服务"): Notification {
+    private fun buildNotification(text: String = "小智待命"): Notification {
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL_ID)
         } else {
@@ -897,7 +1029,21 @@ class VoiceForegroundService : LifecycleService() {
 
     private fun updateNotification(text: String) {
         val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-        manager.notify(NOTIFICATION_ID, buildNotification(text))
+        manager.notify(NOTIFICATION_ID, buildNotification(notificationText(text)))
+    }
+
+    private fun notificationText(text: String): String {
+        val state = VoiceSessionState.state.value
+        return when (state.deviceState) {
+            DeviceState.Listening -> "正在聆听"
+            DeviceState.Speaking -> "正在回复"
+            else -> when (state.status) {
+                ConnectionStatus.ActivationRequired -> text.ifBlank { "等待设备激活" }
+                ConnectionStatus.Connected ->
+                    if (state.wakeWordEnabled) "小智待命，唤醒词已开启" else "小智待命"
+                else -> "小智待命"
+            }
+        }
     }
 
     private fun localIpAddress(): String {
@@ -969,6 +1115,7 @@ class VoiceForegroundService : LifecycleService() {
         private const val NETWORK_RECOVERY_POLL_MS = 3_000L
         private const val ACTIVATION_RETRY_DELAY_MS = 15_000L
         private const val WAKE_MODE_POLL_MS = 200L
+        private const val RECONNECT_POLL_MS = 200L
         private const val LISTENING_MODE_AUTO = "auto"
         private const val LISTENING_MODE_REALTIME = "realtime"
         private val FINAL_TEXT_STATES = setOf("stop", "sentence_end")
@@ -1021,11 +1168,8 @@ class VoiceForegroundService : LifecycleService() {
         }
 
         fun startListening(context: Context) {
-            if (companionActive.get()) {
-                conversationCommands.add(COMMAND_START_LISTENING)
-                return
-            }
-            context.startService(
+            conversationCommands.add(COMMAND_START_LISTENING)
+            context.startForegroundService(
                 Intent(context, VoiceForegroundService::class.java)
                     .setAction(ACTION_START_LISTENING)
             )
@@ -1082,8 +1226,9 @@ class VoiceForegroundService : LifecycleService() {
                 VoiceSessionState.appendChat(trimmed, fromUser = true)
                 VoiceSessionState.update(
                     status = VoiceSessionState.state.value.status,
-                    statusText = "文本已排队，等待语音链路就绪"
+                    statusText = "文本已发送"
                 )
+                activeService.get()?.requestConnection()
                 return true
             }
 
