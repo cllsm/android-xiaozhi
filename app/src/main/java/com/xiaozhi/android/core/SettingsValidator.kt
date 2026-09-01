@@ -11,6 +11,9 @@ object SettingsValidator {
             if (settings.websocketUrl.isNotBlank() && !isWebSocketUrl(settings.websocketUrl)) {
                 add("WebSocket 地址必须以 ws:// 或 wss:// 开头")
             }
+            if (settings.mcpEndpointUrl.isNotBlank() && !isWebSocketUrl(settings.mcpEndpointUrl)) {
+                add("MCP 接入点必须是有效的 ws:// 或 wss:// 地址")
+            }
             if (settings.wakeWordEnabled) {
                 if (settings.wakeWordText.none(Char::isLetterOrDigit)) {
                     add("唤醒词文本不能为空")

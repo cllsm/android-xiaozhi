@@ -411,7 +411,7 @@ class SystemOverlayService : Service() {
             layoutParams = LinearLayout.LayoutParams(dp(8), dp(8))
         }
         statusView = TextView(this).apply {
-            text = "点击开始对话"
+            text = "点击启动"
             textSize = 11f
             setTextColor(COLOR_TEXT_SECONDARY)
             maxLines = 2
@@ -441,7 +441,7 @@ class SystemOverlayService : Service() {
             (collapseAction.layoutParams as? LinearLayout.LayoutParams)?.marginStart = dp(3)
         }
 
-        primaryAction = actionButton("打开 App 启动", COLOR_PRIMARY)
+        primaryAction = actionButton("启动小智", COLOR_PRIMARY)
         abortAction = actionButton("打断回复", COLOR_MUTED)
         wakeAction = actionButton("唤醒词 开", COLOR_SUCCESS)
         stopAction = actionButton("停止服务", COLOR_DANGER)
@@ -866,22 +866,22 @@ class SystemOverlayService : Service() {
         }
 
         statusView.text = when {
-            !running -> "点击开始对话"
-            state.status == ConnectionStatus.ActivationRequired -> "等待设备激活"
-            state.waitingForNetwork -> "等待网络恢复"
+            !running -> "点击启动"
             state.deviceState == DeviceState.Listening -> "正在聆听"
             state.deviceState == DeviceState.Speaking -> "正在回复"
+            state.status == ConnectionStatus.ActivationRequired -> "需要激活"
+            state.waitingForNetwork -> "等待网络后自动继续"
             state.status == ConnectionStatus.Error ->
-                if (state.autoRecoveryEnabled) "断开 · 自动恢复" else "断开 · 可重连"
-            state.status == ConnectionStatus.Connecting -> "连接中"
+                if (state.autoRecoveryEnabled) "自动恢复中" else "点击重试"
+            state.status == ConnectionStatus.Connecting -> "准备中"
             state.wakeWordEnabled -> "唤醒词待命"
-            else -> "可开始对话"
+            else -> "随时可对话"
         }
         primaryAction.text = when {
-            !running -> "打开 App 启动"
-            state.status == ConnectionStatus.ActivationRequired -> "打开 App 激活"
-            state.status == ConnectionStatus.Connecting -> "连接中"
-            state.status == ConnectionStatus.Error -> "立即重连"
+            !running -> "启动小智"
+            state.status == ConnectionStatus.ActivationRequired -> "去激活"
+            state.status == ConnectionStatus.Connecting -> "准备中"
+            state.status == ConnectionStatus.Error -> "重试"
             state.deviceState == DeviceState.Listening -> "停止聆听"
             state.wakeWordEnabled -> "手动聆听"
             else -> "开始聆听"
@@ -1114,9 +1114,11 @@ class SystemOverlayService : Service() {
     }
 
     private fun openApp() {
-        startActivity(
-            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        )
+        runCatching {
+            startActivity(
+                Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }
     }
 
     private fun dp(value: Int): Int {

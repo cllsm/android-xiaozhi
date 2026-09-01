@@ -628,15 +628,12 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
                         analyze()
                     }
                 }
-                VoiceSessionState.appendChat(
-                    directVisionText(result),
-                    fromUser = false
-                )
+                val answer = directVisionText(result)
+                VoiceSessionState.appendChat(answer, fromUser = false)
+                if (result.optBoolean("success", true)) requestVisionSpeech(answer)
             } catch (error: Exception) {
-                VoiceSessionState.appendChat(
-                    error.message ?: "视觉识别失败，请稍后重试",
-                    fromUser = false
-                )
+                val answer = error.message ?: "视觉识别失败，请稍后重试"
+                VoiceSessionState.appendChat(answer, fromUser = false)
             } finally {
                 VoiceSessionState.updateConversation(currentText = "")
                 visionRunning.set(false)
@@ -681,15 +678,12 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
                         )
                     }
                 }
-                VoiceSessionState.appendChat(
-                    directVisionText(result),
-                    fromUser = false
-                )
+                val answer = directVisionText(result)
+                VoiceSessionState.appendChat(answer, fromUser = false)
+                if (result.optBoolean("success", true)) requestVisionSpeech(answer)
             } catch (error: Exception) {
-                VoiceSessionState.appendChat(
-                    error.message ?: "图片识别失败，请稍后重试",
-                    fromUser = false
-                )
+                val answer = error.message ?: "图片识别失败，请稍后重试"
+                VoiceSessionState.appendChat(answer, fromUser = false)
             } finally {
                 VoiceSessionState.updateConversation(currentText = "")
                 visionRunning.set(false)
@@ -828,5 +822,9 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
         const val SERVICE_STOP_WAIT_MS = 300L
         const val VISION_CONFIG_TIMEOUT_MS = 8_000L
         const val PROJECTION_READY_WAIT_MS = 600L
+    }
+
+    private fun requestVisionSpeech(text: String) {
+        VoiceForegroundService.requestCloudSpeech(text)
     }
 }

@@ -63,6 +63,7 @@ data class SettingsState(
     val otaUrl: String = "https://api.tenclass.net/xiaozhi/ota/",
     val websocketUrl: String = "",
     val websocketToken: String = "",
+    val mcpEndpointUrl: String = DEFAULT_MCP_ENDPOINT_URL,
     val wakeWordEnabled: Boolean = true,
     val wakeWordText: String = "你好小智",
     val wakeWordSensitivity: Float = 0.25f,
@@ -101,6 +102,9 @@ data class WakeWordTestState(
     val hits: Int = 0,
     val message: String = ""
 )
+
+private const val DEFAULT_MCP_ENDPOINT_URL =
+    "wss://api.xiaozhi.me/mcp/?token=eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjk2MjUwNywiYWdlbnRJZCI6MjI2MjQzMSwiZW5kcG9pbnRJZCI6ImFnZW50XzIyNjI0MzEiLCJwdXJwb3NlIjoibWNwLWVuZHBvaW50IiwiaWF0IjoxNzg4MjUwNzExLCJleHAiOjE4MTk4MDgzMTF9.e_r11mSvrcP7P6BvwayWIuNntJr-2qZIolQ8DgUdc7wqjEToNNdid3e7vQikDIyi-1H4fZP0jmNXlnMUrtZdeg"
 
 data class DiagnosticItem(
     val name: String,

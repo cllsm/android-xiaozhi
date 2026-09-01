@@ -89,7 +89,6 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.AlertDialog
@@ -576,6 +575,16 @@ private fun HomeScreen(
         if (chat.isNotEmpty()) chatListState.animateScrollToItem(chat.lastIndex)
     }
 
+    LaunchedEffect(Unit) {
+        val microphoneReady = context.checkSelfPermission(
+            Manifest.permission.RECORD_AUDIO
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (microphoneReady && !VoiceForegroundService.isRunning()) {
+            VoiceForegroundService.start(context)
+            startRequested = true
+        }
+    }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { grants ->
@@ -751,10 +760,17 @@ private fun HomeScreen(
     }
 
     fun startVoiceAction() {
-        val microphoneReady = context.checkSelfPermission(
-            Manifest.permission.RECORD_AUDIO
-        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-        if (serviceRunning &&
+        if (!serviceRunning) {
+            permissionLauncher.launch(
+                buildList {
+                    add(Manifest.permission.RECORD_AUDIO)
+                    add(Manifest.permission.CAMERA)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        add(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }.toTypedArray()
+            )
+        } else if (
             runtimeState.status == ConnectionStatus.Error &&
             !runtimeState.waitingForNetwork
         ) {
@@ -767,23 +783,8 @@ private fun HomeScreen(
                 VoiceForegroundService.setWakeWordEnabled(context, false)
             }
             VoiceForegroundService.startListening(context)
-        } else if (microphoneReady) {
-            VoiceForegroundService.start(context)
-            startRequested = true
-            if (settings.wakeWordEnabled) {
-                VoiceForegroundService.setWakeWordEnabled(context, false)
-            }
-            VoiceForegroundService.startListening(context)
         } else {
-            permissionLauncher.launch(
-                buildList {
-                    add(Manifest.permission.RECORD_AUDIO)
-                    add(Manifest.permission.CAMERA)
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        add(Manifest.permission.POST_NOTIFICATIONS)
-                    }
-                }.toTypedArray()
-            )
+            VoiceForegroundService.startListening(context)
         }
     }
 
@@ -859,11 +860,7 @@ private fun HomeScreen(
                 .fillMaxSize()
                 .statusBarsPadding()
         ) {
-        HomeTopBar(
-            settings = settings,
-            runtimeState = runtimeState,
-            serviceRunning = serviceRunning
-        )
+        HomeTopBar()
 
         if (settings.studyCompanionEnabled) {
             Box(
@@ -999,36 +996,6 @@ private fun HomeScreen(
             )
         }
 
-        if (showError) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.error.copy(alpha = 0.15f))
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = UserErrorMessages.from(runtimeState.statusText),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.weight(1f)
-                )
-                TextButton(
-                    onClick = { VoiceForegroundService.reconnectNow(context) },
-                    contentPadding = PaddingValues(horizontal = 8.dp)
-                ) {
-                    Text("立即重连")
-                }
-                Text(
-                    text = "✕",
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier
-                        .clickable { dismissedError = runtimeState.statusText }
-                        .padding(8.dp)
-                )
-            }
-        }
-
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1049,7 +1016,6 @@ private fun HomeScreen(
                     onObjectLook = {
                         requestCameraPrompt("帮我拍张照看看这是什么东西")
                     },
-                    onVideo = { sendFromHome("帮我录一段视频") },
                     onCamera = { sendFromHome("帮我打开相机") },
                     onMusic = { sendFromHome("播放一段音乐") },
                     onRecentMusic = onOpenRecentMusic,
@@ -1714,7 +1680,6 @@ private fun QuickToolsPanel(
     onScreenRead: () -> Unit,
     onFrontLook: () -> Unit,
     onObjectLook: () -> Unit,
-    onVideo: () -> Unit,
     onCamera: () -> Unit,
     onMusic: () -> Unit,
     onRecentMusic: () -> Unit,
@@ -1726,7 +1691,6 @@ private fun QuickToolsPanel(
         Triple("读屏幕文字", "朗读屏幕内容") { onScreenRead() },
         Triple("看看面前", "调用前置相机") { onFrontLook() },
         Triple("识别物体", "拍照后识别") { onObjectLook() },
-        Triple("录段视频", "录制一段视频") { onVideo() },
         Triple("打开相机", "启动系统相机") { onCamera() },
         Triple("播放音乐", "播放默认音乐") { onMusic() },
         Triple("最近播放", "重播歌曲") { onRecentMusic() },
@@ -1763,7 +1727,6 @@ private fun QuickToolsPanel(
                                 "看看屏幕" -> Icons.Filled.Visibility
                                 "读屏幕文字" -> Icons.Filled.Description
                                 "看看面前", "识别物体" -> Icons.Filled.PhotoCamera
-                                "录段视频" -> Icons.Filled.Videocam
                                 "打开相机" -> Icons.Filled.CameraAlt
                                 "播放音乐" -> Icons.Filled.MusicNote
                                 else -> Icons.Filled.WbSunny
@@ -1793,11 +1756,7 @@ private fun QuickToolsPanel(
 }
 
 @Composable
-private fun HomeTopBar(
-    settings: SettingsState,
-    runtimeState: VoiceRuntimeState,
-    serviceRunning: Boolean
-) {
+private fun HomeTopBar() {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1810,70 +1769,7 @@ private fun HomeTopBar(
                 style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onBackground
             )
-            Spacer(modifier = Modifier.height(2.dp))
-            HomeStatusPill(
-                label = homeStatusLabel(runtimeState, serviceRunning),
-                color = homeStatusColor(runtimeState, serviceRunning)
-            )
         }
-    }
-}
-
-@Composable
-private fun HomeStatusPill(label: String, color: Color) {
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(5.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .size(7.dp)
-                .clip(CircleShape)
-                .background(color)
-        )
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
-}
-
-private fun homeStatusLabel(
-    state: VoiceRuntimeState,
-    serviceRunning: Boolean
-): String {
-    return when {
-        !serviceRunning -> "可开始对话"
-        state.status == ConnectionStatus.ActivationRequired -> "待激活"
-        state.waitingForNetwork -> "等待网络恢复"
-        state.status == ConnectionStatus.Connecting ||
-            state.deviceState == DeviceState.Connecting -> "连接中"
-        state.deviceState == DeviceState.Listening -> "正在聆听"
-        state.deviceState == DeviceState.Speaking -> "正在回复"
-        state.status == ConnectionStatus.Error ->
-            if (state.autoRecoveryEnabled) "断开 · 自动恢复" else "断开 · 可手动重连"
-        state.status == ConnectionStatus.Connected ->
-            if (state.wakeWordEnabled) "唤醒词待命" else "已连接"
-        else -> "服务运行中"
-    }
-}
-
-@Composable
-private fun homeStatusColor(
-    state: VoiceRuntimeState,
-    serviceRunning: Boolean
-): Color {
-    return when {
-        !serviceRunning -> MaterialTheme.colorScheme.primary
-        state.status == ConnectionStatus.ActivationRequired -> MaterialTheme.colorScheme.error
-        state.deviceState == DeviceState.Listening -> MaterialTheme.colorScheme.tertiary
-        state.deviceState == DeviceState.Speaking -> MaterialTheme.colorScheme.secondary
-        else -> MaterialTheme.colorScheme.primary
     }
 }
 
@@ -3226,7 +3122,15 @@ private fun DeveloperSettingsScreen(
                     ) {
                         draft = draft.copy(websocketToken = it)
                     }
-                    SettingsHint("语音服务通过 WebSocket 直连")
+                    LabeledField(
+                        "MCP 接入点",
+                        draft.mcpEndpointUrl,
+                        placeholder = "wss://...（智能体专属）",
+                        secret = true
+                    ) {
+                        draft = draft.copy(mcpEndpointUrl = it)
+                    }
+                    SettingsHint("语音与 MCP 分开连接；默认接入点已内置，可本机覆盖")
                 }
 
                 SettingsSection("音频设置") {

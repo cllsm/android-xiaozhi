@@ -14,6 +14,9 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Build
+import android.util.Log
+import android.os.Handler
+import android.os.Looper
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
@@ -26,6 +29,7 @@ import com.xiaozhi.android.core.ConnectionStatus
 import com.xiaozhi.android.core.ConnectionRecoveryPolicy
 import com.xiaozhi.android.core.DeviceState
 import com.xiaozhi.android.core.SettingsState
+import com.xiaozhi.android.core.ToolReplySpeechFormatter
 import com.xiaozhi.android.core.VoiceSessionState
 import com.xiaozhi.android.core.UserErrorMessages
 import com.xiaozhi.android.data.DeviceIdentityRepository
@@ -33,7 +37,11 @@ import com.xiaozhi.android.data.SettingsRepository
 import com.xiaozhi.android.media.MusicIntentParser
 import com.xiaozhi.android.media.NativeMusicController
 import com.xiaozhi.android.media.VoiceMusicInterruptionPolicy
-import com.xiaozhi.android.mcp.McpDispatcher
+import com.xiaozhi.android.mcp.AppLauncherTool
+import com.xiaozhi.android.mcp.McpEndpointManager
+import com.xiaozhi.android.mcp.McpServerProtocol
+import com.xiaozhi.android.mcp.VisionResultStore
+import com.xiaozhi.android.mcp.VisionService
 import com.xiaozhi.android.network.OtaClient
 import com.xiaozhi.android.network.XiaozhiWebSocketClient
 import com.xiaozhi.android.study.ReadingEvaluator
@@ -42,6 +50,7 @@ import com.xiaozhi.android.study.StudyObservationEngine
 import com.xiaozhi.android.study.StudySessionManager
 import com.xiaozhi.android.study.StudySessionState
 import com.xiaozhi.android.wake.SherpaWakeWordEngine
+import org.json.JSONObject
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -55,11 +64,21 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import java.net.NetworkInterface
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.ConcurrentLinkedQueue
 
 class VoiceForegroundService : LifecycleService() {
+
+    private data class HiddenSpeechRequest(
+        val text: String,
+        val expiresAt: Long
+    )
+
     private var wakeLock: PowerManager.WakeLock? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val localTtsSpeaker by lazy { LocalTtsSpeaker(this) }
+    private val activeMcpToolResultHandler = AtomicReference<(Any?, Boolean) -> Unit>()
     private val active = AtomicBoolean(false)
     private var connectionJob: kotlinx.coroutines.Job? = null
     private val recoveryRequests = Channel<RecoveryTrigger>(Channel.CONFLATED)
@@ -81,6 +100,16 @@ class VoiceForegroundService : LifecycleService() {
     private lateinit var settingsRepository: SettingsRepository
     private lateinit var identityRepository: DeviceIdentityRepository
     private val otaClient = OtaClient()
+
+    private val mcpEndpointManager by lazy {
+        McpEndpointManager(
+            context = this,
+            scope = lifecycleScope,
+            settingsRepository = settingsRepository
+        ) { result, isError ->
+            activeMcpToolResultHandler.get()?.invoke(result, isError)
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -118,6 +147,8 @@ class VoiceForegroundService : LifecycleService() {
         } else {
             registerReceiver(deviceWakeReceiver, wakeIntentFilter)
         }
+        localTtsSpeaker.warmUp()
+        mcpEndpointManager.start()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -168,6 +199,9 @@ class VoiceForegroundService : LifecycleService() {
             if (lock.isHeld) lock.release()
         }
         wakeLock = null
+        mcpEndpointManager.stop()
+        activeMcpToolResultHandler.set(null)
+        localTtsSpeaker.shutdown()
         NativeMusicController.stop()
         super.onDestroy()
     }
@@ -492,9 +526,11 @@ class VoiceForegroundService : LifecycleService() {
         val initialWakeMode = requestedWakeWordMode.getAndSet(null) ?: settings.wakeWordEnabled
         val wakeMode = AtomicBoolean(initialWakeMode)
         var wakeModeJob: Job? = null
-        val mcpDispatcher = McpDispatcher(this, settings) { payload ->
-            socket.sendMcpPayload(payload)
-        }
+        val serverSpeechGeneration = AtomicLong(0L)
+        val mcpSpeechFallbacks = java.util.concurrent.ConcurrentLinkedQueue<Runnable>()
+        val cloudSpeechActive = AtomicBoolean(false)
+        val cloudSpeechAudioReceived = AtomicBoolean(false)
+        val cloudSpeechLastText = AtomicReference("")
 
         fun startContinuousListening(statusText: String) {
             val listeningMode = if (settings.aecEnabled) {
@@ -509,6 +545,126 @@ class VoiceForegroundService : LifecycleService() {
                 statusText = statusText,
                 deviceState = DeviceState.Listening
             )
+        }
+
+        fun cancelMcpSpeechFallback() {
+            serverSpeechGeneration.incrementAndGet()
+            localTtsSpeaker.stop()
+            while (true) {
+                val runnable = mcpSpeechFallbacks.poll() ?: break
+                mainHandler.removeCallbacks(runnable)
+            }
+        }
+
+        fun scheduleMcpSpeechFallback(result: Any?, isError: Boolean) {
+            val speech = ToolReplySpeechFormatter.format(
+                if (isError) {
+                    mapOf("success" to false, "message" to result.toString())
+                } else {
+                    result
+                }
+            ) ?: return
+            Log.i(
+                TAG,
+                "MCP speech fallback scheduled, length=${speech.length}, " +
+                    "localTtsReady=${localTtsSpeaker.isReady()}"
+            )
+            val generation = serverSpeechGeneration.incrementAndGet()
+            val runnable = Runnable {
+                if (generation != serverSpeechGeneration.get()) return@Runnable
+                socket.sendAbortSpeaking()
+                VoiceSessionState.appendChat(speech, fromUser = false)
+
+                NativeMusicController.pauseForVoiceInteraction()
+                VoiceSessionState.update(
+                    status = ConnectionStatus.Connected,
+                    statusText = "正在播报功能结果",
+                    deviceState = DeviceState.Speaking
+                )
+                updateNotification("正在播报功能结果")
+                Log.i(TAG, "MCP local speech requested, length=${speech.length}")
+                localTtsSpeaker.speak(speech) { spoken ->
+                    if (generation != serverSpeechGeneration.get()) return@speak
+                    Log.i(TAG, "MCP local speech finished, spoken=$spoken")
+                    if (spoken) {
+                        if (NativeMusicController.isPausedForVoiceInteraction()) {
+                            NativeMusicController.resumeAfterVoiceInteraction()
+                        }
+                        VoiceSessionState.update(
+                            status = ConnectionStatus.Connected,
+                            statusText = "功能结果播报完成",
+                            deviceState = DeviceState.Idle
+                        )
+                        updateNotification(VoiceSessionState.state.value.statusText)
+                        startContinuousListening("继续聆听")
+                    } else {
+                        val delivered = sendDirectSpeechFallback(socket, speech, "MCP")
+                        VoiceSessionState.update(
+                            status = ConnectionStatus.Connected,
+                            statusText = if (delivered) {
+                                "正在尝试云端播报功能结果"
+                            } else {
+                                "本机与云端语音合成暂不可用"
+                            },
+                            deviceState = DeviceState.Idle
+                        )
+                        updateNotification(VoiceSessionState.state.value.statusText)
+                        if (!delivered) startContinuousListening("继续聆听")
+                    }
+                }
+            }
+            mcpSpeechFallbacks.add(runnable)
+            mainHandler.postDelayed(runnable, MCP_TOOL_SPEECH_DELAY_MS)
+        }
+
+        val mcpToolResultHandler: (Any?, Boolean) -> Unit = { result, isError ->
+            scheduleMcpSpeechFallback(result, isError)
+        }
+        activeMcpToolResultHandler.set(mcpToolResultHandler)
+
+        fun handleBootstrapMcp(payload: JSONObject): Boolean {
+            if (payload.optString("jsonrpc") != McpServerProtocol.JSONRPC_VERSION) return false
+            val method = payload.optString("method")
+            val id = payload.opt("id") ?: return true
+            val response = when (method) {
+                "initialize" -> {
+                    VisionService.configure(
+                        payload.optJSONObject("params")
+                            ?.optJSONObject("capabilities")
+                            ?: JSONObject()
+                    )
+                    McpServerProtocol.resultResponse(
+                        id,
+                        JSONObject()
+                            .put("protocolVersion", McpServerProtocol.PROTOCOL_VERSION)
+                            .put(
+                                "capabilities",
+                                JSONObject().put("tools", JSONObject())
+                            )
+                            .put(
+                                "serverInfo",
+                                JSONObject()
+                                    .put("name", "android-xiaozhi-bootstrap")
+                                    .put("version", "1.0.0")
+                            )
+                    )
+                }
+                "tools/list" -> McpServerProtocol.resultResponse(
+                    id,
+                    McpServerProtocol.emptyToolsList()
+                )
+                "tools/call" -> McpServerProtocol.errorResponse(
+                    id,
+                    -32601,
+                    "Tools are served by the official MCP endpoint"
+                )
+                else -> McpServerProtocol.errorResponse(
+                    id,
+                    -32601,
+                    "Method not found: $method"
+                )
+            }
+            return socket.sendMcpPayload(response)
         }
 
         fun stopAudio() {
@@ -625,27 +781,47 @@ class VoiceForegroundService : LifecycleService() {
                             val payload = message.optJSONObject("payload")
                             if (payload != null) {
                                 lifecycleScope.launch(Dispatchers.IO) {
-                                    runCatching { mcpDispatcher.handle(payload) }
-                                        .onFailure { error ->
-                                            VoiceSessionState.update(
-                                                status = ConnectionStatus.Connected,
-                                                statusText = "MCP 工具执行失败：" +
-                                                    (error.message ?: error.javaClass.simpleName)
-                                            )
-                                        }
+                                    val delivered = runCatching { handleBootstrapMcp(payload) }
+                                        .getOrDefault(false)
+                                    Log.i(
+                                        TAG,
+                                        "MCP bootstrap response delivered=$delivered, " +
+                                            "method=${payload.optString("method")}"
+                                    )
                                 }
                             }
                         }
                     if (message.optString("type") == "tts") {
                         val text = message.optString("text")
+                        Log.i(
+                            TAG,
+                            "Cloud TTS state=${message.optString("state")}, " +
+                                "length=${text.length}"
+                        )
                         VoiceSessionState.updateConversation(currentText = text)
-                        if (text.isNotBlank() && message.optString("state") in FINAL_TEXT_STATES) {
+                        val ttsState = message.optString("state")
+                        if (text.isNotBlank()) {
+                            cloudSpeechLastText.set(text)
+                        }
+                        if (ttsState == "start" && activeHiddenSpeechRequest.get() == null) {
+                            claimHiddenSpeechRequest()
+                        }
+                        if (text.isNotBlank() &&
+                            ttsState in FINAL_TEXT_STATES &&
+                            !shouldSuppressAssistantChat()
+                        ) {
                             VoiceSessionState.appendChat(text, fromUser = false)
                         }
-                        val stateText = when (message.optString("state")) {
+                        val stateText = when (ttsState) {
                             "start" -> "正在播放语音"
                             "stop" -> "语音播放完成"
                             else -> return
+                        }
+                        cloudSpeechActive.set(ttsState == "start")
+                        if (ttsState == "start") {
+                            cloudSpeechAudioReceived.set(false)
+                            cancelMcpSpeechFallback()
+                            cancelVisionSpeechFallbacks()
                         }
                         VoiceSessionState.update(
                             status = ConnectionStatus.Connected,
@@ -657,14 +833,30 @@ class VoiceForegroundService : LifecycleService() {
                             }
                         )
                         updateNotification(stateText)
-                        if (message.optString("state") == "start") {
+                        if (ttsState == "start") {
                             NativeMusicController.pauseForVoiceInteraction()
                         }
-                        if (message.optString("state") == "stop") {
+                        if (ttsState == "stop") {
+                            activeHiddenSpeechRequest.set(null)
+                            val fallbackSpeech = cloudSpeechLastText.get().trim()
+                            if (!cloudSpeechAudioReceived.get() && fallbackSpeech.isNotBlank()) {
+                                Log.w(
+                                    TAG,
+                                    "Cloud TTS ended without audio; local fallback, " +
+                                        "length=${fallbackSpeech.length}"
+                                )
+                                localTtsSpeaker.speak(fallbackSpeech) { spoken ->
+                                    Log.i(
+                                        TAG,
+                                        "Cloud TTS no-audio local fallback spoken=$spoken"
+                                    )
+                                }
+                            }
+                            cloudSpeechLastText.set("")
                             startContinuousListening("继续聆听")
                             VoiceSessionState.updateConversation(currentText = "")
                         }
-                        if (message.optString("state") == "stop" &&
+                        if (ttsState == "stop" &&
                             NativeMusicController.isPausedForVoiceInteraction()
                         ) {
                             NativeMusicController.resumeAfterVoiceInteraction()
@@ -677,7 +869,15 @@ class VoiceForegroundService : LifecycleService() {
                             NativeMusicController.pauseForVoiceInteraction()
                         }
                         VoiceSessionState.updateConversation(currentText = text)
-                        if (text.isNotBlank() && (state.isBlank() || state == "final")) {
+                        val hiddenSpeechTrigger = hiddenSpeechRequests.isNotEmpty() &&
+                            hiddenSpeechRequests.any { it.text == text }
+                        if (hiddenSpeechTrigger && activeHiddenSpeechRequest.get() == null) {
+                            claimHiddenSpeechRequest()
+                        }
+                        if (text.isNotBlank() &&
+                            (state.isBlank() || state == "final") &&
+                            !hiddenSpeechTrigger
+                        ) {
                             val studyState = StudySessionState.state.value
                             if (studyState.mode != StudyMode.None) {
                                 StudyObservationEngine.requestSpeechFrame()
@@ -715,11 +915,19 @@ class VoiceForegroundService : LifecycleService() {
                 }
 
                 override fun onAudio(audio: ByteArray) {
+                    if (cloudSpeechActive.get()) {
+                        cloudSpeechAudioReceived.set(true)
+                        cancelMcpSpeechFallback()
+                        cancelVisionSpeechFallbacks()
+                    }
                     audioOutput?.enqueue(audio)
                 }
 
                 override fun onClosed(code: Int, reason: String) {
                     stopAudio()
+                    cancelMcpSpeechFallback()
+                    cancelVisionSpeechFallbacks()
+                    activeMcpToolResultHandler.compareAndSet(mcpToolResultHandler, null)
                     if (active.get()) {
                         VoiceSessionState.update(
                             status = ConnectionStatus.Disconnected,
@@ -732,6 +940,9 @@ class VoiceForegroundService : LifecycleService() {
 
                 override fun onError(message: String) {
                     stopAudio()
+                    cancelMcpSpeechFallback()
+                    cancelVisionSpeechFallbacks()
+                    activeMcpToolResultHandler.compareAndSet(mcpToolResultHandler, null)
                     if (active.get()) {
                         VoiceSessionState.update(
                             status = ConnectionStatus.Connecting,
@@ -857,6 +1068,9 @@ class VoiceForegroundService : LifecycleService() {
             stopAudio()
             socket.close()
             clearActiveSocket(socket)
+            cancelMcpSpeechFallback()
+            cancelVisionSpeechFallbacks()
+            activeMcpToolResultHandler.compareAndSet(mcpToolResultHandler, null)
         }
         return false
     }
@@ -967,7 +1181,7 @@ class VoiceForegroundService : LifecycleService() {
         )
     }
 
-    private fun buildNotification(text: String = "小智待命"): Notification {
+    private fun buildNotification(text: String = "小智准备中"): Notification {
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL_ID)
         } else {
@@ -1004,7 +1218,7 @@ class VoiceForegroundService : LifecycleService() {
             immutableFlag
         )
         return builder
-            .setContentTitle("小智语音服务")
+            .setContentTitle("小智")
             .setContentText(text)
             .setContentIntent(openIntent)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
@@ -1021,29 +1235,31 @@ class VoiceForegroundService : LifecycleService() {
             )
             .addAction(
                 android.R.drawable.ic_popup_sync,
-                "立即重连",
+                "重试",
                 reconnectIntent
             )
             .build()
     }
 
     private fun updateNotification(text: String) {
-        val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-        manager.notify(NOTIFICATION_ID, buildNotification(notificationText(text)))
-    }
-
-    private fun notificationText(text: String): String {
         val state = VoiceSessionState.state.value
-        return when (state.deviceState) {
-            DeviceState.Listening -> "正在聆听"
-            DeviceState.Speaking -> "正在回复"
-            else -> when (state.status) {
-                ConnectionStatus.ActivationRequired -> text.ifBlank { "等待设备激活" }
-                ConnectionStatus.Connected ->
-                    if (state.wakeWordEnabled) "小智待命，唤醒词已开启" else "小智待命"
-                else -> "小智待命"
-            }
+        val content = when {
+            state.deviceState == DeviceState.Listening -> "正在聆听"
+            state.deviceState == DeviceState.Speaking &&
+                text in setOf("正在播报功能结果", "正在朗读识别内容") -> text
+            state.status == ConnectionStatus.Connecting ||
+                state.deviceState == DeviceState.Connecting -> "正在准备，马上就好"
+            state.status == ConnectionStatus.ActivationRequired -> "需要完成设备激活"
+            state.status == ConnectionStatus.Error && state.waitingForNetwork ->
+                "网络恢复后会自动继续"
+            state.status == ConnectionStatus.Error && state.autoRecoveryEnabled ->
+                "正在自动恢复，消息会先排队"
+            state.status == ConnectionStatus.Error -> "暂时不可用，可点重试"
+            state.status == ConnectionStatus.Connected -> "随时可对话"
+            else -> "小智准备中"
         }
+        val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(NOTIFICATION_ID, buildNotification(content))
     }
 
     private fun localIpAddress(): String {
@@ -1064,7 +1280,26 @@ class VoiceForegroundService : LifecycleService() {
                 NativeMusicController.searchAndPlay(songName)
             }
             VoiceSessionState.appendChat(result, fromUser = false)
+            speakLocalFunctionReply(result)
         }
+    }
+
+    private fun claimHiddenSpeechRequest() {
+        val now = System.currentTimeMillis()
+        while (true) {
+            val request = hiddenSpeechRequests.peek() ?: break
+            if (request.expiresAt > now) {
+                activeHiddenSpeechRequest.set(request)
+                hiddenSpeechRequests.poll()
+                return
+            }
+            hiddenSpeechRequests.poll()
+        }
+    }
+
+    private fun shouldSuppressAssistantChat(): Boolean {
+        val request = activeHiddenSpeechRequest.get() ?: return false
+        return request.expiresAt > System.currentTimeMillis()
     }
 
     private fun playMusicSelectionLocally(index: Int) {
@@ -1074,6 +1309,89 @@ class VoiceForegroundService : LifecycleService() {
                 NativeMusicController.selectPendingCandidate(index)
             }
             VoiceSessionState.appendChat(result, fromUser = false)
+            speakLocalFunctionReply(result)
+        }
+    }
+
+    private fun speakLocalFunctionReply(text: String) {
+        val speech = ToolReplySpeechFormatter.format(text) ?: return
+        mainHandler.post {
+            NativeMusicController.pauseForVoiceInteraction()
+            VoiceSessionState.update(
+                status = VoiceSessionState.state.value.status,
+                statusText = "正在播报功能结果",
+                deviceState = DeviceState.Speaking
+            )
+            updateNotification("正在播报功能结果")
+            localTtsSpeaker.speak(speech) {
+                if (NativeMusicController.isPausedForVoiceInteraction()) {
+                    NativeMusicController.resumeAfterVoiceInteraction()
+                }
+                VoiceSessionState.update(
+                    status = VoiceSessionState.state.value.status,
+                    statusText = if (it) "功能结果播报完成" else "本机语音合成不可用",
+                    deviceState = DeviceState.Idle
+                )
+                updateNotification(VoiceSessionState.state.value.statusText)
+            }
+        }
+    }
+
+    private fun speakVisionResult(text: String, onFinished: (Boolean) -> Unit) {
+        mainHandler.post {
+            activeWebSocket.get()?.sendAbortSpeaking()
+            NativeMusicController.pauseForVoiceInteraction()
+            VoiceSessionState.update(
+                status = VoiceSessionState.state.value.status,
+                statusText = "正在朗读识别内容",
+                deviceState = DeviceState.Speaking
+            )
+            updateNotification("正在朗读识别内容")
+            localTtsSpeaker.speak(text) { spoken ->
+                if (NativeMusicController.isPausedForVoiceInteraction()) {
+                    NativeMusicController.resumeAfterVoiceInteraction()
+                }
+                VoiceSessionState.update(
+                    status = VoiceSessionState.state.value.status,
+                    statusText = if (spoken) {
+                        "识别内容朗读完成"
+                    } else {
+                        "本机语音合成不可用，正在尝试云端朗读"
+                    },
+                    deviceState = DeviceState.Idle
+                )
+                updateNotification(VoiceSessionState.state.value.statusText)
+                onFinished(spoken)
+            }
+        }
+    }
+
+    private fun speakLocalVisionFallback(text: String) {
+        mainHandler.post {
+            activeWebSocket.get()?.sendAbortSpeaking()
+            NativeMusicController.pauseForVoiceInteraction()
+            VoiceSessionState.appendChat(text, fromUser = false)
+            VoiceSessionState.update(
+                status = VoiceSessionState.state.value.status,
+                statusText = "正在朗读识别内容",
+                deviceState = DeviceState.Speaking
+            )
+            updateNotification("正在朗读识别内容")
+            localTtsSpeaker.speak(text) { spoken ->
+                if (NativeMusicController.isPausedForVoiceInteraction()) {
+                    NativeMusicController.resumeAfterVoiceInteraction()
+                }
+                VoiceSessionState.update(
+                    status = VoiceSessionState.state.value.status,
+                    statusText = if (spoken) {
+                        "识别内容朗读完成"
+                    } else {
+                        "本机语音合成不可用"
+                    },
+                    deviceState = DeviceState.Idle
+                )
+                updateNotification(VoiceSessionState.state.value.statusText)
+            }
         }
     }
 
@@ -1091,6 +1409,11 @@ class VoiceForegroundService : LifecycleService() {
         private val requestedWakeWordMode = AtomicReference<Boolean?>(null)
         private val pendingTexts = ConcurrentLinkedQueue<String>()
         private val conversationCommands = ConcurrentLinkedQueue<String>()
+        private val hiddenSpeechRequests =
+            ConcurrentLinkedQueue<HiddenSpeechRequest>()
+        private val activeHiddenSpeechRequest = AtomicReference<HiddenSpeechRequest?>(null)
+        private val visionSpeechFallbacks = ConcurrentLinkedQueue<Runnable>()
+        private val visionSpeechGeneration = AtomicLong(0L)
         private const val CHANNEL_ID = "xiaozhi_voice"
         private const val NOTIFICATION_ID = 1001
         private const val WAKE_LOCK_TAG = "xiaozhi:voice"
@@ -1116,9 +1439,13 @@ class VoiceForegroundService : LifecycleService() {
         private const val ACTIVATION_RETRY_DELAY_MS = 15_000L
         private const val WAKE_MODE_POLL_MS = 200L
         private const val RECONNECT_POLL_MS = 200L
+        private const val MCP_TOOL_SPEECH_DELAY_MS = 250L
+        private const val VISION_TTS_FALLBACK_DELAY_MS = 1_500L
         private const val LISTENING_MODE_AUTO = "auto"
         private const val LISTENING_MODE_REALTIME = "realtime"
         private val FINAL_TEXT_STATES = setOf("stop", "sentence_end")
+        private const val TAG = "VoiceForegroundService"
+        private const val HIDDEN_SPEECH_TIMEOUT_MS = 30_000L
 
         fun start(context: Context) {
             context.startForegroundService(Intent(context, VoiceForegroundService::class.java))
@@ -1190,6 +1517,73 @@ class VoiceForegroundService : LifecycleService() {
             return activeWebSocket.get()?.sendAbortSpeaking() ?: false
         }
 
+        fun requestCloudSpeech(text: String): Boolean {
+            val speech = ToolReplySpeechFormatter.formatForReading(text) ?: return false
+            VisionResultStore.update(text)
+            VisionResultStore.markPendingSpeech()
+
+            val service = activeService.get()
+            val socket = activeWebSocket.get()
+            if (socket != null) {
+                val delivered = sendDirectSpeechFallback(socket, speech, "Vision")
+                if (delivered) {
+                    service?.let { scheduleVisionSpeechFallback(it, speech) }
+                    return true
+                }
+            }
+            if (service != null) {
+                service.speakVisionResult(speech) { spoken ->
+                    if (!spoken) requestCloudSpeechFallback(speech)
+                }
+                Log.i(TAG, "Local vision speech requested, length=${speech.length}, cloudAvailable=false")
+                return true
+            }
+            return requestCloudSpeechFallback(speech)
+        }
+
+        private fun scheduleVisionSpeechFallback(service: VoiceForegroundService, speech: String) {
+            val generation = visionSpeechGeneration.incrementAndGet()
+            val runnable = Runnable {
+                if (generation != visionSpeechGeneration.get()) return@Runnable
+                Log.i(TAG, "Vision local speech fallback started, length=${speech.length}")
+                service.speakLocalVisionFallback(speech)
+            }
+            visionSpeechFallbacks.add(runnable)
+            service.mainHandler.postDelayed(runnable, VISION_TTS_FALLBACK_DELAY_MS)
+        }
+
+        private fun cancelVisionSpeechFallbacks() {
+            visionSpeechGeneration.incrementAndGet()
+            while (true) {
+                val runnable = visionSpeechFallbacks.poll() ?: break
+                activeService.get()?.mainHandler?.removeCallbacks(runnable)
+            }
+        }
+
+        private fun requestCloudSpeechFallback(speech: String): Boolean {
+            val socket = activeWebSocket.get()
+            return socket?.let { sendDirectSpeechFallback(it, speech, "Vision") } ?: false
+        }
+
+        private fun sendDirectSpeechFallback(
+            socket: XiaozhiWebSocketClient,
+            speech: String,
+            source: String
+        ): Boolean {
+            socket.sendAbortSpeaking()
+            val delivered = socket.sendDeviceCallSpeech(speech)
+            if (delivered) {
+                hiddenSpeechRequests.add(
+                    HiddenSpeechRequest(
+                        text = speech,
+                        expiresAt = System.currentTimeMillis() + HIDDEN_SPEECH_TIMEOUT_MS
+                    )
+                )
+            }
+            Log.i(TAG, "Cloud $source speech fallback delivered=$delivered")
+            return delivered
+        }
+
         fun isRunning(): Boolean {
             return companionActive.get()
         }
@@ -1197,6 +1591,31 @@ class VoiceForegroundService : LifecycleService() {
         fun sendText(text: String, callerContext: Context? = null): Boolean {
             val trimmed = text.trim()
             if (trimmed.isEmpty()) return false
+
+            if (AppLauncherTool.isLaunchRequest(trimmed)) {
+                val service = activeService.get()
+                val launchContext = service?.applicationContext ?:
+                    callerContext?.applicationContext ?:
+                    applicationContextHolder.get()?.applicationContext
+                if (service != null && launchContext != null) {
+                    VoiceSessionState.appendChat(trimmed, fromUser = true)
+                    service.lifecycleScope.launch(Dispatchers.IO) {
+                        val result = AppLauncherTool.launch(launchContext, trimmed)
+                        val message = result.optString("message")
+                        VoiceSessionState.appendChat(message, fromUser = false)
+                        service.speakLocalFunctionReply(message)
+                    }
+                    return true
+                }
+                if (launchContext != null) {
+                    val result = AppLauncherTool.launch(launchContext, trimmed)
+                    val message = result.optString("message")
+                    VoiceSessionState.appendChat(trimmed, fromUser = true)
+                    VoiceSessionState.appendChat(message, fromUser = false)
+                    activeService.get()?.speakLocalFunctionReply(message)
+                    return true
+                }
+            }
 
             NativeMusicController.pendingSelectionIndex(trimmed)?.let { index ->
                 VoiceSessionState.appendChat(trimmed, fromUser = true)

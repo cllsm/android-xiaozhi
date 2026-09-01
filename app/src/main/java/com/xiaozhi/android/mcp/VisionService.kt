@@ -27,7 +27,7 @@ object VisionService {
         val vision = capabilities.optJSONObject("vision") ?: return
         analyzeUrl = vision.optString("url").orEmpty()
         token = vision.optString("token").orEmpty()
-        Log.i(TAG, "configured, url=$analyzeUrl, token=${token.isNotBlank()}")
+        Log.i(TAG, "configured, urlConfigured=${analyzeUrl.isNotBlank()}, token=${token.isNotBlank()}")
     }
 
     fun isConfigured(): Boolean {
@@ -49,8 +49,8 @@ object VisionService {
         }
         Log.i(
             TAG,
-            "analyze request, file=$fileName, imageSize=${image.size}, " +
-                "questionLength=${question.length}, url=$analyzeUrl"
+                "analyze request, file=$fileName, imageSize=${image.size}, " +
+                "questionLength=${question.length}, urlConfigured=${analyzeUrl.isNotBlank()}"
         )
 
         val body = MultipartBody.Builder()

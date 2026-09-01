@@ -2,6 +2,7 @@ package com.xiaozhi.android.media
 
 import android.content.Context
 import android.content.Intent
+import android.util.Log
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -37,6 +38,7 @@ object ScreenCaptureController {
         return permissionData != null
     }
 
+    @Synchronized
     fun createProjection(context: Context): Boolean {
         if (projection != null) return true
         val data = permissionData ?: return false
@@ -44,6 +46,7 @@ object ScreenCaptureController {
             as MediaProjectionManager
         return try {
             val newProjection = manager.getMediaProjection(resultCode, data) ?: return false
+            Log.i(TAG, "MediaProjection created")
             projection = newProjection
             newProjection.also {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -51,6 +54,8 @@ object ScreenCaptureController {
                         object : MediaProjection.Callback() {
                             override fun onStop() {
                                 projection = null
+                                invalidatePermission()
+                                Log.i(TAG, "MediaProjection stopped")
                             }
                         },
                         Handler(context.mainLooper)
@@ -59,10 +64,13 @@ object ScreenCaptureController {
             }
             true
         } catch (_: Exception) {
+            invalidatePermission()
+            Log.w(TAG, "MediaProjection creation failed")
             false
         }
     }
 
+    @Synchronized
     fun capture(context: Context): ByteArray? {
         val activeProjection = projection ?: return null
         val metrics = context.resources.displayMetrics
@@ -113,8 +121,16 @@ object ScreenCaptureController {
     }
 
     fun stop() {
-        projection?.stop()
+        val activeProjection = projection
         projection = null
+        invalidatePermission()
+        activeProjection?.stop()
+    }
+
+    @Synchronized
+    private fun invalidatePermission() {
+        resultCode = Int.MIN_VALUE
+        permissionData = null
     }
 
     private fun convertToJpeg(image: Image, width: Int, height: Int): ByteArray {
@@ -144,6 +160,7 @@ object ScreenCaptureController {
     private const val JPEG_QUALITY = 80
     private const val CAPTURE_TIMEOUT_MS = 1_200L
     private const val FRAME_WAIT_MS = 40L
+    private const val TAG = "ScreenCapture"
 
     fun scaledSize(displayWidth: Int, displayHeight: Int): Pair<Int, Int> {
         val scale = (MAX_DIMENSION.toFloat() / maxOf(displayWidth, displayHeight))

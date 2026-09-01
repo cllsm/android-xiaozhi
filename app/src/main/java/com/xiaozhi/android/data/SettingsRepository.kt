@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.xiaozhi.android.core.SettingsState
 import com.xiaozhi.android.core.ThemeMode
+import com.xiaozhi.android.core.McpEndpointUrlMigration
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
@@ -22,6 +23,7 @@ class SettingsRepository(private val context: Context) {
         val OtaUrl = stringPreferencesKey("ota_url")
         val WebsocketUrl = stringPreferencesKey("websocket_url")
         val WebsocketToken = stringPreferencesKey("websocket_token")
+        val McpEndpointUrl = stringPreferencesKey("mcp_endpoint_url")
         val WakeWordEnabled = booleanPreferencesKey("wake_word_enabled")
         val WakeWordText = stringPreferencesKey("wake_word_text")
         val WakeWordSensitivity = floatPreferencesKey("wake_word_sensitivity")
@@ -58,6 +60,10 @@ class SettingsRepository(private val context: Context) {
                 otaUrl = prefs[Keys.OtaUrl] ?: SettingsState().otaUrl,
                 websocketUrl = prefs[Keys.WebsocketUrl] ?: "",
                 websocketToken = prefs[Keys.WebsocketToken] ?: "",
+                mcpEndpointUrl = McpEndpointUrlMigration.resolve(
+                    savedUrl = prefs[Keys.McpEndpointUrl],
+                    defaultUrl = SettingsState().mcpEndpointUrl
+                ),
                 wakeWordEnabled = prefs[Keys.WakeWordEnabled] ?: true,
                 wakeWordText = prefs[Keys.WakeWordText] ?: "你好小智",
                 wakeWordSensitivity = prefs[Keys.WakeWordSensitivity] ?: 0.25f,
@@ -99,6 +105,7 @@ class SettingsRepository(private val context: Context) {
             prefs[Keys.OtaUrl] = newState.otaUrl
             prefs[Keys.WebsocketUrl] = newState.websocketUrl
             prefs[Keys.WebsocketToken] = newState.websocketToken
+            prefs[Keys.McpEndpointUrl] = newState.mcpEndpointUrl
             prefs[Keys.WakeWordEnabled] = newState.wakeWordEnabled
             prefs[Keys.WakeWordText] = newState.wakeWordText
             prefs[Keys.WakeWordSensitivity] = newState.wakeWordSensitivity
