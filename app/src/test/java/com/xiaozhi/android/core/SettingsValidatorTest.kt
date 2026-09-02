@@ -38,13 +38,15 @@ class SettingsValidatorTest {
         val result = SettingsValidator.validate(
             SettingsState(
                 otaUrl = "ftp://example.com",
-                websocketUrl = "invalid"
+                websocketUrl = "invalid",
+                mcpEndpointUrl = "http://example.com/mcp/"
             )
         )
 
         assertFalse(result.valid)
         assertTrue(result.errors.any { it.contains("OTA") })
         assertTrue(result.errors.any { it.contains("WebSocket") })
+        assertTrue(result.errors.any { it.contains("MCP") })
     }
 
     @Test
@@ -53,7 +55,8 @@ class SettingsValidatorTest {
             SettingsState(
                 otaUrl = "https://api.example.com/ota/",
                 websocketUrl = "wss://api.example.com/v1/",
-                websocketToken = "temporary-token"
+                websocketToken = "temporary-token",
+                mcpEndpointUrl = "wss://api.example.com/mcp/?token=secret"
             )
         )
 

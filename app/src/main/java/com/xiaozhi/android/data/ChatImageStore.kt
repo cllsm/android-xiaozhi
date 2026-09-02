@@ -6,9 +6,12 @@ import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.media.ExifInterface
 import android.net.Uri
+import android.util.Log
+import com.xiaozhi.android.core.ImageCodecs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.ByteArrayOutputStream
 import java.util.UUID
 import kotlin.math.roundToInt
 
@@ -32,35 +35,132 @@ object ChatImageStore {
         context: Context,
         sourceBytes: ByteArray
     ): StoredChatImage? = withContext(Dispatchers.IO) {
-        val bitmap = decodeOrientedBitmap(sourceBytes) ?: return@withContext null
-        val fullBitmap = scaleBitmap(bitmap, MAX_FULL_DIMENSION)
-        val thumbnailBitmap = scaleBitmap(bitmap, MAX_THUMBNAIL_DIMENSION)
-        val directory = File(context.filesDir, DIRECTORY_NAME).apply { mkdirs() }
-        val id = UUID.randomUUID().toString()
-        val fullFile = File(directory, "$id.jpg")
-        val thumbnailFile = File(directory, "${id}_thumb.jpg")
-
-        val fullWritten = fullFile.outputStream().use { output ->
-            fullBitmap.compress(Bitmap.CompressFormat.JPEG, FULL_QUALITY, output)
-        }
-        val thumbnailWritten = thumbnailFile.outputStream().use { output ->
-            thumbnailBitmap.compress(Bitmap.CompressFormat.JPEG, THUMBNAIL_QUALITY, output)
-        }
-        if (fullBitmap != bitmap) fullBitmap.recycle()
-        if (thumbnailBitmap != bitmap) thumbnailBitmap.recycle()
-        bitmap.recycle()
-
-        if (!fullWritten || !thumbnailWritten) {
-            fullFile.delete()
-            thumbnailFile.delete()
-            null
+        val uploadSourceBytes = if (ImageCodecs.looksLikeJpeg(sourceBytes)) {
+            sourceBytes
         } else {
-            StoredChatImage(
-                uploadBytes = fullFile.readBytes(),
+            transcodeToJpeg(sourceBytes)
+        }
+        if (uploadSourceBytes == null) {
+            Log.w(
+                TAG,
+                "Chat image decode/transcode failed, bytes=${sourceBytes.size}"
+            )
+            return@withContext null
+        }
+
+        val directory = File(context.filesDir, DIRECTORY_NAME).apply { mkdirs() }
+        if (!directory.isDirectory) {
+            Log.w(TAG, "Chat image directory unavailable: ${directory.absolutePath}")
+            return@withContext null
+        }
+
+        val id = UUID.randomUUID().toString()
+        val sourceFile = File(directory, "${id}_source.jpg")
+        if (!writeBytes(sourceFile, uploadSourceBytes)) {
+            Log.w(
+                TAG,
+                "Chat source image write failed, bytes=${uploadSourceBytes.size}"
+            )
+            return@withContext null
+        }
+
+        var fullFile = sourceFile
+        var uploadBytes = uploadSourceBytes
+        var thumbnailFile = sourceFile
+        val bitmap = runCatching { decodeOrientedBitmap(uploadSourceBytes) }.getOrNull()
+        if (bitmap == null) {
+            Log.w(
+                TAG,
+                "Chat image decode failed; keeping source, bytes=${sourceBytes.size}"
+            )
+            return@withContext StoredChatImage(
+                uploadBytes = uploadBytes,
                 fullPath = fullFile.absolutePath,
                 thumbnailPath = thumbnailFile.absolutePath
             )
         }
+
+        try {
+            val fullBitmap = scaleBitmap(bitmap, MAX_FULL_DIMENSION)
+            val scaledFullFile = File(directory, "$id.jpg")
+            try {
+                if (writeBitmap(scaledFullFile, fullBitmap, FULL_QUALITY)) {
+                    fullFile = scaledFullFile
+                    uploadBytes = scaledFullFile.readBytes()
+                    sourceFile.delete()
+                } else {
+                    Log.w(TAG, "Chat full image compression failed; using source")
+                    scaledFullFile.delete()
+                }
+            } finally {
+                recycleDerivedBitmap(fullBitmap, bitmap)
+            }
+
+            val thumbnailBitmap = scaleBitmap(bitmap, MAX_THUMBNAIL_DIMENSION)
+            val scaledThumbnailFile = File(directory, "${id}_thumb.jpg")
+            try {
+                if (writeBitmap(scaledThumbnailFile, thumbnailBitmap, THUMBNAIL_QUALITY)) {
+                    thumbnailFile = scaledThumbnailFile
+                } else {
+                    Log.w(TAG, "Chat thumbnail compression failed; using full image")
+                    scaledThumbnailFile.delete()
+                }
+            } finally {
+                recycleDerivedBitmap(thumbnailBitmap, bitmap)
+            }
+        } catch (error: Exception) {
+            Log.w(TAG, "Chat image processing failed; using source", error)
+        } finally {
+            recycleBitmap(bitmap)
+        }
+
+        StoredChatImage(
+            uploadBytes = uploadBytes,
+            fullPath = fullFile.absolutePath,
+            thumbnailPath = thumbnailFile.absolutePath
+        )
+    }
+
+    private fun writeBytes(file: File, bytes: ByteArray): Boolean {
+        return runCatching {
+            file.outputStream().use { output -> output.write(bytes) }
+        }.isSuccess
+    }
+
+    private fun writeBitmap(
+        file: File,
+        bitmap: Bitmap,
+        quality: Int
+    ): Boolean {
+        return runCatching {
+            file.outputStream().use { output ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, quality, output)
+            }
+        }.getOrDefault(false)
+    }
+
+    private fun transcodeToJpeg(sourceBytes: ByteArray): ByteArray? {
+        val bitmap = runCatching { decodeOrientedBitmap(sourceBytes) }.getOrNull()
+            ?: return null
+        try {
+            val output = ByteArrayOutputStream()
+            if (!bitmap.compress(Bitmap.CompressFormat.JPEG, FULL_QUALITY, output)) {
+                return null
+            }
+            return output.toByteArray().takeIf {
+                it.size >= 4 && ImageCodecs.looksLikeJpeg(it)
+            }
+        } finally {
+            recycleBitmap(bitmap)
+        }
+    }
+
+    private fun recycleBitmap(bitmap: Bitmap) {
+        if (!bitmap.isRecycled) bitmap.recycle()
+    }
+
+    private fun recycleDerivedBitmap(bitmap: Bitmap, source: Bitmap) {
+        if (bitmap !== source && !bitmap.isRecycled) bitmap.recycle()
     }
 
     private fun decodeOrientedBitmap(bytes: ByteArray): Bitmap? {
@@ -122,6 +222,7 @@ object ChatImageStore {
     }
 
     private const val DIRECTORY_NAME = "chat_images"
+    private const val TAG = "ChatImageStore"
     private const val MAX_SOURCE_BYTES = 20 * 1024 * 1024
     private const val MAX_FULL_DIMENSION = 1600
     private const val MAX_THUMBNAIL_DIMENSION = 360

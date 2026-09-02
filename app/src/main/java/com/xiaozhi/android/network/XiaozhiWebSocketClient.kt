@@ -60,7 +60,14 @@ class XiaozhiWebSocketClient(
                     Log.i(TAG, "WebSocket server hello received, session=${sessionId.orEmpty()}")
                     listener.onServerHello(sessionId)
                 } else {
-                    Log.i(TAG, "WebSocket JSON received, type=${json.optString("type")}")
+                    val messageType = json.optString("type")
+                    if (messageType == "alert") {
+                        val alertText = json.optString("message")
+                            .ifBlank { json.optString("error") }
+                            .ifBlank { json.optString("reason") }
+                        Log.w(TAG, "WebSocket alert received: $alertText")
+                    }
+                    Log.i(TAG, "WebSocket JSON received, type=$messageType")
                     listener.onJson(json)
                 }
             }
@@ -80,13 +87,15 @@ class XiaozhiWebSocketClient(
     }
 
     fun sendStartListening(mode: String = LISTENING_MODE_MANUAL): Boolean {
-        return sendJson(
+        val delivered = sendJson(
             JSONObject()
                 .putOpt("session_id", sessionId)
                 .put("type", TYPE_LISTEN)
                 .put("state", "start")
                 .put("mode", mode)
         )
+        Log.i(TAG, "WebSocket start listening sent, delivered=$delivered, mode=$mode")
+        return delivered
     }
 
     fun sendWakeWordDetected(wakeWord: String): Boolean {
@@ -94,13 +103,15 @@ class XiaozhiWebSocketClient(
     }
 
     fun sendText(text: String): Boolean {
-        return sendJson(
+        val delivered = sendJson(
             JSONObject()
                 .putOpt("session_id", sessionId)
                 .put("type", TYPE_LISTEN)
                 .put("state", "detect")
                 .put("text", text)
         )
+        Log.i(TAG, "WebSocket text sent, delivered=$delivered, length=${text.length}")
+        return delivered
     }
 
     fun sendStopListening(): Boolean {

@@ -21,6 +21,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import android.util.Size
+import com.xiaozhi.android.core.ImageCodecs
 import com.xiaozhi.android.study.StudyCameraFacing
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.CountDownLatch
@@ -369,7 +370,15 @@ class StudyObservationController(
                 for (index in bytes.indices) {
                     bytes[index] = buffer.get()
                 }
-                rotateIfNeeded(bytes, sensorOrientation)
+                if (!ImageCodecs.looksLikeJpeg(bytes)) {
+                    Log.w(
+                        TAG,
+                        "Study camera returned invalid JPEG, bytes=${bytes.size}"
+                    )
+                    null
+                } else {
+                    rotateIfNeeded(bytes, sensorOrientation)
+                }
             }
         } catch (_: Exception) {
             null
@@ -481,6 +490,7 @@ class StudyObservationController(
     }
 
     private companion object {
+        const val TAG = "StudyObservation"
         const val JPEG_QUALITY = 85
         const val MAX_IMAGES = 3
         const val MAX_DIMENSION = 1920
