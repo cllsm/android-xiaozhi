@@ -27,6 +27,7 @@ import com.xiaozhi.android.media.MusicPlaybackState
 import com.xiaozhi.android.media.NativeMusicController
 import com.xiaozhi.android.media.ScreenCaptureController
 import com.xiaozhi.android.mcp.ScreenVisionPromptBuilder
+import com.xiaozhi.android.mcp.VisionResultStore
 import com.xiaozhi.android.mcp.VisionService
 import com.xiaozhi.android.service.MediaProjectionForegroundService
 import com.xiaozhi.android.service.VoiceForegroundService
@@ -285,6 +286,12 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
         return StudySessionManager.confirmCameraSetup()
     }
 
+    /** 陪学会话中的文本发送：同时刷新闲置计时基准 */
+    fun sendStudyText(text: String): Boolean {
+        StudySessionManager.noteInteraction()
+        return sendText(text)
+    }
+
     fun captureHomeworkPage(intent: String, questionNumber: Int? = null) {
         runStudyCapture {
             StudySessionManager.captureHomeworkPage(intent, questionNumber)
@@ -297,7 +304,8 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun requestHomeworkHint(questionNumber: Int) {
+    fun requestHomeworkHint(questionNumber: Int?) {
+        StudySessionManager.noteInteraction()
         val context = StudySessionManager.homeworkContext(questionNumber)
         if (!context.success) {
             VoiceSessionState.appendChat(context.message, fromUser = false)
@@ -317,6 +325,7 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun repeatReadingSentence() {
+        StudySessionManager.noteInteraction()
         val context = StudySessionManager.readingContext()
         if (!context.success) {
             VoiceSessionState.appendChat(context.message, fromUser = false)
@@ -327,6 +336,7 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun askReadingComprehension() {
+        StudySessionManager.noteInteraction()
         val context = StudySessionManager.readingContext()
         if (!context.success) {
             VoiceSessionState.appendChat(context.message, fromUser = false)
@@ -337,9 +347,11 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun moveReadingSentence(delta: Int) {
+        StudySessionManager.noteInteraction()
         StudySessionManager.moveReadingSentence(delta)
     }
 
+    /** 结束会话：结算星星并进入总结页（页面自己展示数据，这里只留一条聊天摘要） */
     fun stopStudy(): StudySessionRecord? {
         val record = StudySessionManager.stop()
         VoiceSessionState.appendChat(
@@ -399,12 +411,17 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun analyzeCamera(prompt: String) {
+    fun analyzeCamera(prompt: String, preferFront: Boolean = false) {
         runImageVision(
             prompt = prompt,
             runningText = "正在拍照识别...",
             loadImage = {
-                val image = CameraCaptureController(getApplication()).capture()
+                val facing = if (preferFront) {
+                    android.hardware.camera2.CameraCharacteristics.LENS_FACING_FRONT
+                } else {
+                    android.hardware.camera2.CameraCharacteristics.LENS_FACING_BACK
+                }
+                val image = CameraCaptureController(getApplication(), facing).capture()
                     ?: return@runImageVision null
                 ChatImageStore.store(getApplication(), image)
             }
@@ -630,7 +647,9 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
                 }
                 val answer = directVisionText(result)
                 VoiceSessionState.appendChat(answer, fromUser = false)
-                if (result.optBoolean("success", true)) requestVisionSpeech(answer)
+                if (result.optBoolean("success", true)) {
+                    requestModelVisionReply(normalizedPrompt, answer)
+                }
             } catch (error: Exception) {
                 val answer = error.message ?: "视觉识别失败，请稍后重试"
                 VoiceSessionState.appendChat(answer, fromUser = false)
@@ -680,7 +699,9 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
                 }
                 val answer = directVisionText(result)
                 VoiceSessionState.appendChat(answer, fromUser = false)
-                if (result.optBoolean("success", true)) requestVisionSpeech(answer)
+                if (result.optBoolean("success", true)) {
+                    requestModelVisionReply(normalizedPrompt, answer)
+                }
             } catch (error: Exception) {
                 val answer = error.message ?: "图片识别失败，请稍后重试"
                 VoiceSessionState.appendChat(answer, fromUser = false)
@@ -824,7 +845,18 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
         const val PROJECTION_READY_WAIT_MS = 600L
     }
 
-    private fun requestVisionSpeech(text: String) {
-        VoiceForegroundService.requestVisionSpeech(text)
+    /**
+     * 识别成功后把「用户问题 + 识别结果」作为系统消息交给云端大模型，
+     * 由大模型组织自然回复并经云端 TTS 播报（长文本自动经 MCP 长文本工具送达）。
+     */
+    private fun requestModelVisionReply(prompt: String, answer: String) {
+        VisionResultStore.update(answer)
+        VoiceForegroundService.sendText(
+            "【图片识别】用户发来一张图片并说:「$prompt」。图片识别结果如下:" +
+                "「$answer」。请结合识别结果，用自然对话的口吻直接回答用户，" +
+                "不要逐字照念识别结果，也不要提及这条指令。",
+            getApplication(),
+            asSystem = true
+        )
     }
 }

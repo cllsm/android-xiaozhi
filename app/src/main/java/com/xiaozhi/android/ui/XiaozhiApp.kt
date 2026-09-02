@@ -9,7 +9,6 @@ import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -43,7 +42,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -78,7 +76,6 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.HealthAndSafety
 import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MusicNote
@@ -127,7 +124,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
@@ -164,9 +160,8 @@ import com.xiaozhi.android.media.ScreenCaptureController
 import com.xiaozhi.android.service.MediaProjectionForegroundService
 import com.xiaozhi.android.service.VoiceForegroundService
 import com.xiaozhi.android.ui.theme.XiaozhiTheme
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.content.FileProvider
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -552,7 +547,7 @@ private fun HomeScreen(
     runtimeState: VoiceRuntimeState,
     onSendText: (String) -> Boolean,
     onAnalyzeScreen: (String) -> Unit,
-    onAnalyzeCamera: (String) -> Unit,
+    onAnalyzeCamera: (String, Boolean) -> Unit,
     onAnalyzeImage: (String, Uri) -> Unit,
     onOpenRecentMusic: () -> Unit,
     onOpenStudy: () -> Unit
@@ -567,6 +562,7 @@ private fun HomeScreen(
     var pendingTextNeedsCamera by remember { mutableStateOf(false) }
     var pendingVisionAction by remember { mutableStateOf<DirectVisionAction?>(null) }
     var pendingVisionPrompt by remember { mutableStateOf<String?>(null) }
+    var pendingVisionCameraFront by remember { mutableStateOf(false) }
     var pendingVisionImage by remember { mutableStateOf<Uri?>(null) }
     var draftImage by remember { mutableStateOf<Uri?>(null) }
     var viewingImage by remember { mutableStateOf<String?>(null) }
@@ -592,9 +588,11 @@ private fun HomeScreen(
     ) { grants ->
         val visionAction = pendingVisionAction
         val visionPrompt = pendingVisionPrompt
+        val visionCameraFront = pendingVisionCameraFront
         val visionImage = pendingVisionImage
         pendingVisionAction = null
         pendingVisionPrompt = null
+        pendingVisionCameraFront = false
         pendingVisionImage = null
 
         if (grants[Manifest.permission.RECORD_AUDIO] == true) {
@@ -607,7 +605,7 @@ private fun HomeScreen(
                 DirectVisionAction.Screen ->
                     visionPrompt?.let(onAnalyzeScreen)
                 DirectVisionAction.Camera ->
-                    visionPrompt?.let(onAnalyzeCamera)
+                    visionPrompt?.let { onAnalyzeCamera(it, visionCameraFront) }
                 DirectVisionAction.Image ->
                     visionImage?.let { image -> onAnalyzeImage(visionPrompt.orEmpty(), image) }
                 null -> if (regularCameraReady) {
@@ -619,7 +617,7 @@ private fun HomeScreen(
                 DirectVisionAction.Screen ->
                     visionPrompt?.let(onAnalyzeScreen)
                 DirectVisionAction.Camera ->
-                    visionPrompt?.let(onAnalyzeCamera)
+                    visionPrompt?.let { onAnalyzeCamera(it, visionCameraFront) }
                 DirectVisionAction.Image ->
                     visionImage?.let { image -> onAnalyzeImage(visionPrompt.orEmpty(), image) }
                 null -> Unit
@@ -654,7 +652,7 @@ private fun HomeScreen(
         return true
     }
 
-    fun requestDirectVision(prompt: String, action: DirectVisionAction) {
+    fun requestDirectVision(prompt: String, action: DirectVisionAction, preferFront: Boolean = false) {
         val microphoneReady = context.checkSelfPermission(
             Manifest.permission.RECORD_AUDIO
         ) == android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -671,7 +669,7 @@ private fun HomeScreen(
             startRequested = true
             when (action) {
                 DirectVisionAction.Screen -> onAnalyzeScreen(prompt)
-                DirectVisionAction.Camera -> onAnalyzeCamera(prompt)
+                DirectVisionAction.Camera -> onAnalyzeCamera(prompt, preferFront)
                 DirectVisionAction.Image -> Unit
             }
             return
@@ -679,6 +677,7 @@ private fun HomeScreen(
 
         pendingVisionAction = action
         pendingVisionPrompt = prompt
+        pendingVisionCameraFront = preferFront
         pendingText = null
         pendingTextNeedsCamera = false
         permissionLauncher.launch(
@@ -722,20 +721,23 @@ private fun HomeScreen(
         val text = textDraft.trim()
         val image = draftImage
         if (image == null) {
-            if (text.isNotEmpty() && sendFromHome(text)) {
-                textDraft = ""
-                toolsExpanded = false
+            if (text.isEmpty()) return
+            // 先清空输入框再发送，避免发送耗时或输入法异步重放导致文本残留
+            textDraft = ""
+            toolsExpanded = false
+            if (!sendFromHome(text)) {
+                textDraft = text
             }
             return
         }
 
+        textDraft = ""
+        draftImage = null
+        toolsExpanded = false
         requestImagePrompt(
             prompt = text.ifBlank { "描述这张图片的内容" },
             image = image
         )
-        textDraft = ""
-        draftImage = null
-        toolsExpanded = false
     }
 
     val imagePicker = rememberLauncherForActivityResult(
@@ -758,6 +760,30 @@ private fun HomeScreen(
         pendingScreenPrompt = null
     }
 
+    // 系统相机拍照回传：拍完的照片自动送视觉识别，弥补“只打开相机、照片拿不到”的缺口
+    var pendingCameraOutput by remember { mutableStateOf<Uri?>(null) }
+    val systemCameraLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.TakePicture()
+    ) { saved ->
+        val photoUri = pendingCameraOutput
+        pendingCameraOutput = null
+        if (saved && photoUri != null) {
+            requestImagePrompt("帮我看看这张照片拍了什么", photoUri)
+        }
+    }
+
+    fun launchSystemCamera() {
+        val uri = runCatching {
+            val directory = File(context.filesDir, "camera_capture").apply { mkdirs() }
+            val output = File(directory, "capture_${System.currentTimeMillis()}.jpg")
+            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", output)
+        }.getOrNull()
+        if (uri != null) {
+            pendingCameraOutput = uri
+            systemCameraLauncher.launch(uri)
+        }
+    }
+
     val serviceRunning = VoiceForegroundService.isRunning() ||
         startRequested ||
         runtimeState.status != ConnectionStatus.Disconnected
@@ -775,8 +801,8 @@ private fun HomeScreen(
         projectionLauncher.launch(manager.createScreenCaptureIntent())
     }
 
-    fun requestCameraPrompt(prompt: String) {
-        requestDirectVision(prompt, DirectVisionAction.Camera)
+    fun requestCameraPrompt(prompt: String, preferFront: Boolean = false) {
+        requestDirectVision(prompt, DirectVisionAction.Camera, preferFront)
     }
 
     fun startVoiceAction() {
@@ -970,7 +996,7 @@ private fun HomeScreen(
                                     if (prompt.contains("屏幕")) {
                                         requestScreenPrompt(prompt)
                                     } else {
-                                        requestCameraPrompt(prompt)
+                                        requestCameraPrompt(prompt, preferFront = true)
                                     }
                                 }
                                 .padding(horizontal = 14.dp, vertical = 11.dp)
@@ -1031,12 +1057,12 @@ private fun HomeScreen(
                     onScreenLook = { requestScreenPrompt("帮我看看屏幕上是什么") },
                     onScreenRead = { requestScreenPrompt("帮我读一下屏幕上的文字") },
                     onFrontLook = {
-                        requestCameraPrompt("帮我看看面前有什么")
+                        requestCameraPrompt("帮我看看面前有什么", preferFront = true)
                     },
                     onObjectLook = {
                         requestCameraPrompt("帮我拍张照看看这是什么东西")
                     },
-                    onCamera = { sendFromHome("帮我打开相机") },
+                    onCamera = { launchSystemCamera() },
                     onMusic = { sendFromHome("播放一段音乐") },
                     onRecentMusic = onOpenRecentMusic,
                     onWeather = { sendFromHome("今天天气怎么样") },
@@ -1174,340 +1200,6 @@ private fun HomeScreen(
             onDismiss = { viewingImage = null }
         )
     }
-    }
-}
-
-@Composable
-private fun StudyCompanionScreen(
-    chat: List<ChatMessage>,
-    runtimeState: VoiceRuntimeState,
-    onSendText: (String) -> Boolean,
-    onBack: () -> Unit
-) {
-    BackHandler(onBack = onBack)
-    val context = LocalContext.current
-    val view = LocalView.current
-    var textDraft by remember { mutableStateOf("") }
-    var startRequested by remember { mutableStateOf(false) }
-    var pendingText by remember { mutableStateOf<String?>(null) }
-    var pendingVoice by remember { mutableStateOf(false) }
-    val chatListState = rememberLazyListState()
-    val visibleChat = remember(chat) { chat.takeLast(30) }
-    val serviceRunning = startRequested ||
-        runtimeState.status != ConnectionStatus.Disconnected
-
-    DisposableEffect(Unit) {
-        val window = (view.context as Activity).window
-        WindowCompat.setDecorFitsSystemWindows(window, false)
-        val controller = WindowInsetsControllerCompat(window, view)
-        controller.hide(WindowInsetsCompat.Type.systemBars())
-        controller.systemBarsBehavior =
-            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        onDispose {
-            controller.show(WindowInsetsCompat.Type.systemBars())
-            WindowCompat.setDecorFitsSystemWindows(window, true)
-        }
-    }
-
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { grants ->
-        if (grants[Manifest.permission.RECORD_AUDIO] == true) {
-            VoiceForegroundService.start(context)
-            startRequested = true
-            pendingText?.let(onSendText)
-            if (pendingVoice) VoiceForegroundService.startListening(context)
-        }
-        pendingText = null
-        pendingVoice = false
-    }
-
-    fun sendFromLive(text: String) {
-        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
-            android.content.pm.PackageManager.PERMISSION_GRANTED
-        ) {
-            VoiceForegroundService.start(context)
-            startRequested = true
-            onSendText(text)
-        } else {
-            pendingText = text
-            pendingVoice = false
-            permissionLauncher.launch(
-                buildList {
-                    add(Manifest.permission.RECORD_AUDIO)
-                    add(Manifest.permission.CAMERA)
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        add(Manifest.permission.POST_NOTIFICATIONS)
-                    }
-                }.toTypedArray()
-            )
-        }
-    }
-
-    fun startVoice() {
-        if (serviceRunning &&
-            runtimeState.status == ConnectionStatus.Connected &&
-            runtimeState.deviceState == DeviceState.Idle
-        ) {
-            VoiceForegroundService.startListening(context)
-        } else {
-            pendingText = null
-            pendingVoice = true
-            permissionLauncher.launch(
-                buildList {
-                    add(Manifest.permission.RECORD_AUDIO)
-                    add(Manifest.permission.CAMERA)
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        add(Manifest.permission.POST_NOTIFICATIONS)
-                    }
-                }.toTypedArray()
-            )
-        }
-    }
-
-    LaunchedEffect(visibleChat.lastOrNull()?.id, runtimeState.currentText) {
-        if (visibleChat.isNotEmpty()) chatListState.animateScrollToItem(visibleChat.lastIndex)
-    }
-
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        StudyCameraPreview(modifier = Modifier.fillMaxSize())
-        Box(
-            modifier = Modifier.fillMaxSize().background(
-                Brush.verticalGradient(
-                    colors = listOf(
-                        Color.Black.copy(alpha = 0.45f),
-                        Color.Transparent,
-                        Color.Black.copy(alpha = 0.15f),
-                        Color.Black.copy(alpha = 0.82f)
-                    )
-                )
-            )
-        )
-        StudyLiveTopBar(onBack)
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .imePadding()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            LazyColumn(
-                modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp),
-                state = chatListState,
-                contentPadding = PaddingValues(vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(7.dp)
-            ) {
-                items(visibleChat, key = { it.id }) { message ->
-                    StudyLiveChatItem(message)
-                }
-                if (runtimeState.currentText.isNotBlank()) {
-                    item(key = "live-reply") {
-                        StudyLiveText(
-                            speaker = "小智",
-                            text = runtimeState.currentText,
-                            fromUser = false
-                        )
-                    }
-                }
-            }
-            StudyLiveInput(
-                value = textDraft,
-                runtimeState = runtimeState,
-                onValueChange = { textDraft = it },
-                onSend = {
-                    val text = textDraft.trim()
-                    if (text.isNotEmpty()) {
-                        sendFromLive(text)
-                        textDraft = ""
-                    }
-                },
-                onVoiceClick = {
-                    if (runtimeState.deviceState == DeviceState.Listening) {
-                        VoiceForegroundService.stopListening(context)
-                    } else if (runtimeState.deviceState == DeviceState.Speaking) {
-                        VoiceForegroundService.abortSpeaking()
-                    } else {
-                        startVoice()
-                    }
-                }
-            )
-        }
-    }
-}
-
-@Composable
-private fun StudyLiveTopBar(onBack: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .statusBarsPadding()
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        RoundIconButton(
-            icon = {
-                Icon(
-                    Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "退出全屏",
-                    tint = Color.White
-                )
-            },
-            onClick = onBack
-        )
-        Row(
-            modifier = Modifier
-                .clip(RoundedCornerShape(8.dp))
-                .background(Color.Black.copy(alpha = 0.58f))
-                .padding(horizontal = 9.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Filled.LiveTv,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(15.dp)
-            )
-            Text(
-                text = "陪学直播",
-                style = MaterialTheme.typography.labelMedium,
-                color = Color.White
-            )
-        }
-    }
-}
-
-@Composable
-private fun StudyLiveChatItem(message: ChatMessage) {
-    StudyLiveText(
-        speaker = if (message.fromUser) "主人翁" else "小智",
-        text = message.text,
-        fromUser = message.fromUser
-    )
-}
-
-@Composable
-private fun StudyLiveText(
-    speaker: String,
-    text: String,
-    fromUser: Boolean
-) {
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalAlignment = if (fromUser) Alignment.End else Alignment.Start
-    ) {
-        Text(
-            text = speaker,
-            style = MaterialTheme.typography.labelSmall,
-            color = Color.White.copy(alpha = 0.72f)
-        )
-        Text(
-            text = text,
-            style = MaterialTheme.typography.bodyMedium,
-            color = Color.White,
-            modifier = Modifier
-                .widthIn(max = 320.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(
-                    if (fromUser) {
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.82f)
-                    } else {
-                        Color.Black.copy(alpha = 0.58f)
-                    }
-                )
-                .padding(horizontal = 11.dp, vertical = 8.dp)
-        )
-    }
-}
-
-@Composable
-private fun StudyLiveInput(
-    value: String,
-    runtimeState: VoiceRuntimeState,
-    onValueChange: (String) -> Unit,
-    onSend: () -> Unit,
-    onVoiceClick: () -> Unit
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.Bottom,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        BasicTextField(
-            value = value,
-            onValueChange = onValueChange,
-            modifier = Modifier
-                .weight(1f)
-                .heightIn(min = 46.dp, max = 112.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(Color.Black.copy(alpha = 0.58f))
-                .padding(horizontal = 13.dp, vertical = 10.dp),
-            textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color.White),
-            minLines = 1,
-            maxLines = 4,
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-            keyboardActions = KeyboardActions(onSend = { onSend() }),
-            decorationBox = { field ->
-                Box(contentAlignment = Alignment.CenterStart) {
-                    if (value.isEmpty()) {
-                        Text(
-                            "给小智发消息",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = Color.White.copy(alpha = 0.65f)
-                        )
-                    }
-                    field()
-                }
-            }
-        )
-        Box(
-            modifier = Modifier
-                .size(46.dp)
-                .clip(CircleShape)
-                .background(Color.White.copy(alpha = 0.18f))
-                .clickable(onClick = onVoiceClick),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = if (
-                    runtimeState.deviceState == DeviceState.Listening ||
-                    runtimeState.deviceState == DeviceState.Speaking
-                ) {
-                    Icons.Filled.Stop
-                } else {
-                    Icons.Filled.Mic
-                },
-                contentDescription = if (
-                    runtimeState.deviceState == DeviceState.Listening ||
-                    runtimeState.deviceState == DeviceState.Speaking
-                ) {
-                    "停止语音"
-                } else {
-                    "开始语音"
-                },
-                tint = Color.White
-            )
-        }
-        Box(
-            modifier = Modifier
-                .size(46.dp)
-                .clip(CircleShape)
-                .background(
-                    if (value.isBlank()) Color.White.copy(alpha = 0.18f)
-                    else MaterialTheme.colorScheme.primary
-                )
-                .clickable(onClick = onSend),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                Icons.AutoMirrored.Filled.Send,
-                contentDescription = "发送",
-                tint = Color.White
-            )
-        }
     }
 }
 
@@ -1709,7 +1401,7 @@ private fun QuickToolsPanel(
         Triple("读屏幕文字", "朗读屏幕内容") { onScreenRead() },
         Triple("看看面前", "调用前置相机") { onFrontLook() },
         Triple("识别物体", "拍照后识别") { onObjectLook() },
-        Triple("打开相机", "启动系统相机") { onCamera() },
+        Triple("打开相机", "系统相机拍完识别") { onCamera() },
         Triple("播放音乐", "播放默认音乐") { onMusic() },
         Triple("最近播放", "重播歌曲") { onRecentMusic() },
         Triple("查天气", "查询今日天气") { onWeather() }
@@ -2743,8 +2435,8 @@ private fun SettingsScreen(
             if (sectionVisible(settingsQuery, "陪学", "陪学 视频 预览 全屏 直播")) {
                 SettingsSection("陪学") {
                 SwitchSettingRow(
-                    label = "开启陪学模式",
-                    hint = "首页显示视频预览，可进入全屏直播式对话",
+                    label = "首页陪学巡查（前摄）",
+                    hint = "首页显示前摄预览并定时巡查提醒；完整陪学请进入底部“陪学”页",
                     checked = draft.studyCompanionEnabled
                 ) {
                     draft = draft.copy(studyCompanionEnabled = it)

@@ -1,8 +1,11 @@
 package com.xiaozhi.android.media
 
+import com.xiaozhi.android.core.VoiceSessionState
 import com.xiaozhi.android.mcp.StudyCompanionPromptBuilder
 import com.xiaozhi.android.mcp.VisionService
 import com.xiaozhi.android.service.VoiceForegroundService
+import com.xiaozhi.android.study.StudyProactivityPolicy
+import com.xiaozhi.android.study.StudySessionState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -40,11 +43,16 @@ object StudyCompanionController {
 
     init {
         scope.launch {
-            // 首轮巡查稍等片刻，让预览画面稳定后再建立观察基线
-            delay(FIRST_PATROL_DELAY_MS)
+            var firstRound = true
             while (isActive) {
+                // 间隔与首轮延迟由家长中心的 AI 主动性档位决定，每轮动态读取
+                val profile = StudyProactivityPolicy.forLevel(
+                    StudySessionState.state.value.settings.proactivityLevel
+                )
+                // 首轮巡查稍等片刻，让预览画面稳定后再建立观察基线
+                delay(if (firstRound) profile.firstPatrolDelayMs else profile.patrolIntervalMs)
+                firstRound = false
                 runCatching { patrolOnce() }
-                delay(PATROL_INTERVAL_MS)
             }
         }
     }
@@ -93,19 +101,18 @@ object StudyCompanionController {
             return
         }
         val summary = StudyCompanionPromptBuilder.summarize(analysis)
+        // 系统内部消息直发云端（豁免长文本替换），聊天里只记录干净的巡查摘要
         val delivered = VoiceForegroundService.sendText(
-            "${StudyCompanionPromptBuilder.PATROL_LEAD}$summary"
+            "${StudyCompanionPromptBuilder.PATROL_LEAD}$summary",
+            asSystem = true
         )
+        if (delivered) {
+            VoiceSessionState.appendChat(summary, fromUser = false)
+        }
         lastResultFlow.value = PatrolResult(
             timestamp = System.currentTimeMillis(),
             summary = summary,
             delivered = delivered
         )
     }
-
-    /** 巡逻间隔：5 分钟一次，避免打扰过频 */
-    private const val PATROL_INTERVAL_MS = 5 * 60 * 1000L
-
-    /** 首轮巡查延迟：预览稳定后再开始观察 */
-    private const val FIRST_PATROL_DELAY_MS = 60 * 1000L
 }

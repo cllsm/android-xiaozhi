@@ -9,6 +9,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.xiaozhi.android.study.AnswerPolicy
 import com.xiaozhi.android.study.StudyMode
 import com.xiaozhi.android.study.StudyCameraFacing
+import com.xiaozhi.android.study.StudyProactivityPolicy
 import com.xiaozhi.android.study.StudySessionRecord
 import com.xiaozhi.android.study.StudySettings
 import java.io.IOException
@@ -41,7 +42,11 @@ class StudySessionRepository(private val context: Context) {
                 cameraFacing = when (prefs[Keys.CameraFacing]) {
                     "front" -> StudyCameraFacing.Front
                     else -> StudyCameraFacing.Back
-                }
+                },
+                proactivityLevel = StudyProactivityPolicy.levelFromStorage(
+                    prefs[Keys.ProactivityLevel]
+                ),
+                childNickname = prefs[Keys.ChildNickname] ?: ""
             )
         }
 
@@ -67,6 +72,10 @@ class StudySessionRepository(private val context: Context) {
                 StudyCameraFacing.Back -> "back"
                 StudyCameraFacing.Front -> "front"
             }
+            prefs[Keys.ProactivityLevel] = StudyProactivityPolicy.levelToStorage(
+                settings.proactivityLevel
+            )
+            prefs[Keys.ChildNickname] = settings.childNickname.take(12)
         }
     }
 
@@ -133,10 +142,13 @@ class StudySessionRepository(private val context: Context) {
         val ObservationEnabled = booleanPreferencesKey("observation_enabled")
         val ObservationIntervalSeconds = intPreferencesKey("observation_interval_seconds")
         val CameraFacing = stringPreferencesKey("camera_facing")
+        val ProactivityLevel = stringPreferencesKey("proactivity_level")
+        val ChildNickname = stringPreferencesKey("child_nickname")
         val Records = stringPreferencesKey("records")
     }
 
     private companion object {
-        const val MAX_RECORDS = 30
+        // 成长报告需要"最近两周 + 上周对比"，30 条不够单日多次的场景
+        const val MAX_RECORDS = 60
     }
 }

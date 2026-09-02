@@ -30,7 +30,11 @@ data class StudySettings(
     val breakMinutes: Int = 5,
     val observationEnabled: Boolean = true,
     val observationIntervalSeconds: Int = 10,
-    val cameraFacing: StudyCameraFacing = StudyCameraFacing.Back
+    val cameraFacing: StudyCameraFacing = StudyCameraFacing.Back,
+    // AI 主动性档位：决定巡查频率、闲置介入与鼓励节奏（家长中心可调）
+    val proactivityLevel: ProactivityLevel = ProactivityLevel.Moderate,
+    // 孩子昵称：播报称呼用，空则用"小朋友"
+    val childNickname: String = ""
 ) {
     val focusSeconds: Int get() = focusMinutes * 60
     val breakSeconds: Int get() = breakMinutes * 60
@@ -94,6 +98,10 @@ data class StudyRuntimeState(
     val startedAt: Long = 0L,
     val focusRemainingSeconds: Int = 0,
     val breakRemainingSeconds: Int = 0,
+    // 本次会话累计专注秒数（跨多个专注周期持续累加，结算星星用）
+    val focusElapsedSeconds: Int = 0,
+    // 最近一次孩子互动时刻（STT/UI/MCP），闲置介入的计时基准；小智自己的播报不刷新
+    val lastInteractionAt: Long = 0L,
     val captureRunning: Boolean = false,
     val observationRunning: Boolean = false,
     val observationFrames: Int = 0,
@@ -104,8 +112,12 @@ data class StudyRuntimeState(
     val lastCaptureFailure: String = "",
     val consecutiveCaptureFailures: Int = 0,
     val statusMessage: String = "",
+    // 预览与取帧的手动旋转校正（0/90/180/270），用于相机画面方向不符的设备（如模拟器虚拟相机）
+    val previewRotationOffset: Int = 0,
     val homeworkPage: HomeworkPageState? = null,
-    val readingPage: ReadingPageState? = null
+    val readingPage: ReadingPageState? = null,
+    // 会话结束后的星星结算（phase == Summary 时非空，驱动结束总结页）
+    val summary: StudySettlement? = null
 )
 
 data class StudySessionRecord(

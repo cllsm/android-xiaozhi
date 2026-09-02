@@ -15,12 +15,14 @@ object StudySessionState {
 
     fun prepare(mode: StudyMode) {
         val settings = stateFlow.value.settings
+        val now = System.currentTimeMillis()
         stateFlow.value = StudyRuntimeState(
             mode = mode,
             phase = StudyPhase.Prepare,
             settings = settings,
             focusRemainingSeconds = settings.focusSeconds,
-            breakRemainingSeconds = settings.breakSeconds
+            breakRemainingSeconds = settings.breakSeconds,
+            lastInteractionAt = now
         )
     }
 
@@ -42,7 +44,10 @@ object StudySessionState {
     fun tickFocus() {
         updateCurrent { state ->
             if (state.focusRemainingSeconds > 0) {
-                state.copy(focusRemainingSeconds = state.focusRemainingSeconds - 1)
+                state.copy(
+                    focusRemainingSeconds = state.focusRemainingSeconds - 1,
+                    focusElapsedSeconds = state.focusElapsedSeconds + 1
+                )
             } else {
                 state
             }
@@ -127,6 +132,18 @@ object StudySessionState {
         updateCurrent { it.copy(statusMessage = message) }
     }
 
+    /** 记录一次孩子互动（语音/UI/MCP 入口），刷新闲置计时基准 */
+    fun noteInteraction(at: Long = System.currentTimeMillis()) {
+        updateCurrent { state ->
+            if (state.mode == StudyMode.None) state else state.copy(lastInteractionAt = at)
+        }
+    }
+
+    /** 会话结束进入总结阶段：结算结果驱动结束总结页 */
+    fun enterSummary(settlement: StudySettlement) {
+        updateCurrent { it.copy(phase = StudyPhase.Summary, summary = settlement) }
+    }
+
     fun updateHomework(update: (HomeworkPageState) -> HomeworkPageState) {
         updateCurrent { state ->
             val page = state.homeworkPage ?: return@updateCurrent state
@@ -142,8 +159,20 @@ object StudySessionState {
     }
 
     fun reset() {
-        val settings = stateFlow.value.settings
-        stateFlow.value = StudyRuntimeState(settings = settings)
+        val current = stateFlow.value
+        stateFlow.value = StudyRuntimeState(
+            settings = current.settings,
+            previewRotationOffset = current.previewRotationOffset
+        )
+    }
+
+    /** 手动校正预览方向：每次顺时针旋转 90°，预览与取帧识别同步生效。 */
+    fun rotatePreview() {
+        updateCurrent { state ->
+            state.copy(
+                previewRotationOffset = (state.previewRotationOffset + 90) % 360
+            )
+        }
     }
 
     private fun updateCurrent(update: (StudyRuntimeState) -> StudyRuntimeState) {

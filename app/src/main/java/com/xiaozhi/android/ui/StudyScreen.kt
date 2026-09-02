@@ -48,25 +48,20 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.FactCheck
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.School
+import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
@@ -84,23 +79,23 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.map
 import com.xiaozhi.android.core.ChatMessage
 import com.xiaozhi.android.core.DeviceState
 import com.xiaozhi.android.service.VoiceForegroundService
 import com.xiaozhi.android.media.StudyPreviewInfo
 import com.xiaozhi.android.media.StudyPreviewOrientation
 import com.xiaozhi.android.study.StudyObservationEngine
-import com.xiaozhi.android.study.AnswerPolicy
 import com.xiaozhi.android.study.StudyCameraFacing
+import com.xiaozhi.android.study.QuickCommand
+import com.xiaozhi.android.study.QuickCommandAction
+import com.xiaozhi.android.study.StudyCommandCatalog
 import com.xiaozhi.android.study.StudyMode
 import com.xiaozhi.android.study.StudyPhase
+import com.xiaozhi.android.study.StudyRewardEngine
 import com.xiaozhi.android.study.StudyRuntimeState
-import com.xiaozhi.android.study.StudySessionRecord
-import com.xiaozhi.android.study.StudySessionManager
 import com.xiaozhi.android.study.StudySessionState
 import com.xiaozhi.android.study.StudySettings
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -117,11 +112,11 @@ internal fun StudyScreen(
     val runtimeState by viewModel.runtimeState.collectAsStateWithLifecycle()
     var fullscreenPreview by remember { mutableStateOf(false) }
     var pendingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
-    var showParentDialog by remember { mutableStateOf(false) }
-    var parentGate by remember { mutableStateOf(0 to 0) }
-    var parentGateAnswer by remember { mutableStateOf("") }
-    var finishedRecord by remember { mutableStateOf<StudySessionRecord?>(null) }
-    var draft by remember(settings) { mutableStateOf(settings) }
+    // 家长中心：先过算式门禁再进入（与"家长解锁答案"共用门禁组件）
+    var showParentCenter by remember { mutableStateOf(false) }
+    var parentCenterUnlocked by remember { mutableStateOf(false) }
+    // 全屏预览的底部输入草稿
+    var liveInputDraft by remember { mutableStateOf("") }
 
     BackHandler(enabled = fullscreenPreview) {
         fullscreenPreview = false
@@ -165,6 +160,41 @@ internal fun StudyScreen(
         }
     }
 
+    // 快捷指令分发：芯片直接复用现有能力，SendText 型与孩子说话同通道
+    fun handleQuickCommand(command: QuickCommand) {
+        when (command.action) {
+            QuickCommandAction.SendText -> viewModel.sendStudyText(command.prompt)
+            QuickCommandAction.CaptureExplain ->
+                withStudyPermissions {
+                    if (state.mode == StudyMode.Homework) {
+                        viewModel.captureHomeworkPage(
+                            com.xiaozhi.android.study.HomeworkPromptBuilder.INTENT_EXPLAIN
+                        )
+                    } else {
+                        viewModel.captureReadingPage()
+                    }
+                }
+            QuickCommandAction.CaptureCheck ->
+                withStudyPermissions {
+                    viewModel.captureHomeworkPage(
+                        com.xiaozhi.android.study.HomeworkPromptBuilder.INTENT_CHECK
+                    )
+                }
+            QuickCommandAction.HintCurrent -> viewModel.requestHomeworkHint(null)
+            QuickCommandAction.RepeatReading -> viewModel.repeatReadingSentence()
+            QuickCommandAction.AskComprehension -> viewModel.askReadingComprehension()
+            QuickCommandAction.PrevSentence -> viewModel.moveReadingSentence(-1)
+            QuickCommandAction.NextSentence -> viewModel.moveReadingSentence(1)
+            QuickCommandAction.FinishSession -> viewModel.stopStudy()
+        }
+    }
+
+    fun sendFromLive(text: String) {
+        if (text.isBlank()) return
+        liveInputDraft = ""
+        viewModel.sendStudyText(text)
+    }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -174,14 +204,26 @@ internal fun StudyScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
-            Text(
-                text = "陪学",
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 20.dp, end = 16.dp, top = 14.dp, bottom = 2.dp),
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold
-            )
+                    .padding(start = 20.dp, end = 8.dp, top = 14.dp, bottom = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "陪学",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(onClick = { showParentCenter = true }) {
+                    Icon(
+                        imageVector = Icons.Filled.Shield,
+                        contentDescription = "家长中心",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
         }
 
         if (state.mode != StudyMode.None && !fullscreenPreview) {
@@ -253,152 +295,36 @@ internal fun StudyScreen(
                     ) {
                         withStudyPermissions { viewModel.startStudy(StudyMode.Reading) }
                     }
-                }
-            }
-            item {
-                StudyPanel {
-                    Text(
-                        text = "陪学设置",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    OutlinedTextField(
-                        value = draft.childGrade,
-                        onValueChange = { draft = draft.copy(childGrade = it.take(12)) },
-                        label = { Text("孩子年级") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(14.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "固定机位观察",
-                                style = MaterialTheme.typography.labelLarge
-                            )
-                            Text(
-                                text = "自动取帧，或孩子说话时取一帧",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(
-                            checked = draft.observationEnabled,
-                            onCheckedChange = {
-                                draft = draft.copy(observationEnabled = it)
-                            }
-                        )
-                    }
-                    if (draft.observationEnabled) {
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Text(
-                            text = "自动取帧间隔 ${draft.observationIntervalSeconds} 秒",
-                            style = MaterialTheme.typography.labelLarge
-                        )
-                        Slider(
-                            value = draft.observationIntervalSeconds.toFloat(),
-                            onValueChange = {
-                                draft = draft.copy(
-                                    observationIntervalSeconds = it.roundToInt()
-                                )
-                            },
-                            valueRange = 3f..30f
-                        )
-                    }
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
-                        text = "固定手机，让孩子和学习资料同时进入画面。相机只在陪学期间保持会话，不录制视频；取当前 JPEG 帧用于识别，识别帧会保存在本机并显示在对话中。",
+                        text = "学习中可以说“看第 3 题”，也可以点屏幕上的快捷按钮和小智互动；右上角盾牌是家长中心。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Spacer(modifier = Modifier.height(14.dp))
-                    Text(
-                        text = "专注 ${draft.focusMinutes} 分钟",
-                        style = MaterialTheme.typography.labelLarge
-                    )
-                    Slider(
-                        value = draft.focusMinutes.toFloat(),
-                        onValueChange = {
-                            draft = draft.copy(focusMinutes = it.roundToInt())
-                        },
-                        valueRange = 5f..60f
-                    )
-                    Text(
-                        text = "休息 ${draft.breakMinutes} 分钟",
-                        style = MaterialTheme.typography.labelLarge
-                    )
-                    Slider(
-                        value = draft.breakMinutes.toFloat(),
-                        onValueChange = {
-                            draft = draft.copy(breakMinutes = it.roundToInt())
-                        },
-                        valueRange = 2f..20f
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text("答案策略", style = MaterialTheme.typography.labelLarge)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilterChip(
-                            selected = draft.answerPolicy == AnswerPolicy.GuidanceOnly,
-                            onClick = { draft = draft.copy(answerPolicy = AnswerPolicy.GuidanceOnly) },
-                            label = { Text("只引导") }
-                        )
-                        FilterChip(
-                            selected = draft.answerPolicy == AnswerPolicy.GuidanceThenAnswer,
-                            onClick = {
-                                parentGate = (
-                                    (System.currentTimeMillis() % 37L).toInt() + 11
-                                    ) to ((System.currentTimeMillis() / 7L % 29L).toInt() + 7)
-                                parentGateAnswer = ""
-                                showParentDialog = true
-                            },
-                            label = { Text("家长解锁答案") }
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Button(
-                        onClick = { viewModel.updateStudySettings(draft) },
-                        modifier = Modifier.fillMaxWidth()
-                    ) { Text("保存陪学设置") }
-                }
-            }
-            item {
-                StudyPanel {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = "最近报告",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.weight(1f)
-                        )
-                        TextButton(onClick = viewModel::clearStudyRecords) {
-                            Text("清空")
-                        }
-                    }
-                    if (records.isEmpty()) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            "还没有陪学报告",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    } else {
-                        Spacer(modifier = Modifier.height(10.dp))
-                        records.forEach { record ->
-                            StudyRecordRow(record)
-                            Spacer(modifier = Modifier.height(8.dp))
-                        }
-                    }
                 }
             }
         } else {
             item {
                 StudySessionHeader(
                     state = state,
-                    onStop = { finishedRecord = viewModel.stopStudy() }
+                    liveStars = StudyRewardEngine.liveStars(state),
+                    onStop = { viewModel.stopStudy() }
+                )
+            }
+
+            item {
+                StudyQuickCommandRow(
+                    commands = StudyCommandCatalog.forContext(
+                        mode = state.mode,
+                        phase = state.phase,
+                        hasPage = if (state.mode == StudyMode.Homework) {
+                            !state.homeworkPage?.items.isNullOrEmpty()
+                        } else {
+                            !state.readingPage?.sentences.isNullOrEmpty()
+                        }
+                    ),
+                    enabled = !state.captureRunning,
+                    onCommand = ::handleQuickCommand
                 )
             }
 
@@ -413,56 +339,6 @@ internal fun StudyScreen(
             }
 
             if (state.mode == StudyMode.Homework) {
-                item {
-                    StudyPanel {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = {
-                                    withStudyPermissions {
-                                        viewModel.captureHomeworkPage(
-                                            com.xiaozhi.android.study.HomeworkPromptBuilder.INTENT_EXPLAIN
-                                        )
-                                    }
-                                },
-                                enabled = !state.captureRunning,
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(Icons.Filled.CameraAlt, contentDescription = null)
-                                Text("拍当前页")
-                            }
-                            OutlinedButton(
-                                onClick = {
-                                    withStudyPermissions {
-                                        viewModel.captureHomeworkPage(
-                                            com.xiaozhi.android.study.HomeworkPromptBuilder.INTENT_CHECK
-                                        )
-                                    }
-                                },
-                                enabled = !state.captureRunning,
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(Icons.Filled.FactCheck, contentDescription = null)
-                                Text("检查")
-                            }
-                            OutlinedButton(
-                                onClick = {
-                                    withStudyPermissions {
-                                        viewModel.captureHomeworkPage(
-                                            com.xiaozhi.android.study.HomeworkPromptBuilder.INTENT_REFRESH
-                                        )
-                                    }
-                                },
-                                enabled = !state.captureRunning,
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(Icons.Filled.Refresh, contentDescription = null)
-                                Text("重看")
-                            }
-                        }
-                    }
-                }
                 val page = state.homeworkPage
                 if (page == null || page.items.isEmpty()) {
                     item {
@@ -527,50 +403,6 @@ internal fun StudyScreen(
                     }
                 }
             } else {
-                item {
-                    StudyPanel {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = {
-                                    withStudyPermissions { viewModel.captureReadingPage() }
-                                },
-                                enabled = !state.captureRunning,
-                                modifier = Modifier.weight(2f)
-                            ) {
-                                Icon(Icons.Filled.CameraAlt, contentDescription = null)
-                                Text("拍书页")
-                            }
-                            IconButton(
-                                onClick = { viewModel.moveReadingSentence(-1) },
-                                enabled = !state.captureRunning
-                            ) {
-                                Icon(Icons.Filled.ChevronLeft, contentDescription = "上一句")
-                            }
-                            IconButton(
-                                onClick = { viewModel.moveReadingSentence(1) },
-                                enabled = !state.captureRunning
-                            ) {
-                                Icon(Icons.Filled.ChevronRight, contentDescription = "下一句")
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = viewModel::repeatReadingSentence,
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                                Text("领读")
-                            }
-                            OutlinedButton(
-                                onClick = viewModel::askReadingComprehension,
-                                modifier = Modifier.weight(1f)
-                            ) { Text("理解提问") }
-                        }
-                    }
-                }
                 val page = state.readingPage
                 if (page == null || page.sentences.isEmpty()) {
                     item {
@@ -648,52 +480,57 @@ internal fun StudyScreen(
         item { Spacer(modifier = Modifier.height(12.dp)) }
     }
 
-    if (showParentDialog) {
-        AlertDialog(
-            onDismissRequest = { showParentDialog = false },
-            title = { Text("家长确认") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("开启后，小智在给足思路提示后可以说出最终答案。请家长确认孩子正在陪伴下使用。")
-                    OutlinedTextField(
-                        value = parentGateAnswer,
-                        onValueChange = { value ->
-                            parentGateAnswer = value.filter(Char::isDigit).take(3)
-                        },
-                        label = { Text("家长验证：${parentGate.first} + ${parentGate.second} = ?") },
-                        singleLine = true
-                    )
-                }
+    // 家长中心入口：先过算式门禁，验证通过后打开设置与报告
+    if (showParentCenter && !parentCenterUnlocked) {
+        ParentGateDialog(
+            description = "家长中心包含陪学设置与学习报告，请家长完成验证。",
+            onVerified = { parentCenterUnlocked = true },
+            onDismiss = { showParentCenter = false }
+        )
+    }
+    if (showParentCenter && parentCenterUnlocked) {
+        ParentCenterSheet(
+            settings = settings,
+            records = records,
+            onSaveSettings = viewModel::updateStudySettings,
+            onClearRecords = {
+                viewModel.clearStudyRecords()
             },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        draft = draft.copy(answerPolicy = AnswerPolicy.GuidanceThenAnswer)
-                        showParentDialog = false
-                    },
-                    enabled = parentGateAnswer.toIntOrNull() ==
-                        parentGate.first + parentGate.second
-                ) { Text("确认开启") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showParentDialog = false }) { Text("取消") }
+            onDismiss = {
+                showParentCenter = false
+                parentCenterUnlocked = false
             }
         )
     }
 
-    finishedRecord?.let { record ->
-        StudySummaryDialog(
-            record = record,
-            onClose = { finishedRecord = null }
+    // 会话结束：总结页覆盖整屏，"收下星星"复位
+    state.summary?.let { settlement ->
+        StudySummaryScreen(
+            settlement = settlement,
+            nickname = state.settings.childNickname,
+            onCollect = StudySessionState::reset
         )
     }
 
-    if (fullscreenPreview && state.mode != StudyMode.None) {
+    if (fullscreenPreview && state.mode != StudyMode.None && state.summary == null) {
         StudyFullscreenPreview(
             state = state,
             chat = chat,
             currentText = runtimeState.currentText,
             listening = runtimeState.deviceState == DeviceState.Listening,
+            voiceActive = runtimeState.deviceState == DeviceState.Listening ||
+                runtimeState.deviceState == DeviceState.Speaking,
+            inputDraft = liveInputDraft,
+            onInputDraftChange = { liveInputDraft = it },
+            onSendFromLive = ::sendFromLive,
+            onVoiceClick = {
+                when (runtimeState.deviceState) {
+                    DeviceState.Listening -> VoiceForegroundService.stopListening(context)
+                    DeviceState.Speaking -> VoiceForegroundService.abortSpeaking()
+                    else -> VoiceForegroundService.startListening(context)
+                }
+            },
+            onQuickCommand = ::handleQuickCommand,
             cameraFacing = state.settings.cameraFacing,
             showSetupGuide = state.phase == StudyPhase.Prepare,
             onSwitchCamera = {
@@ -797,6 +634,15 @@ private fun StudyPreviewCard(
             horizontalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             Icon(
+                imageVector = Icons.Filled.Refresh,
+                contentDescription = "旋转画面",
+                tint = Color.White,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(enabled = observationRunning, onClick = StudySessionState::rotatePreview)
+                    .padding(8.dp)
+            )
+            Icon(
                 imageVector = Icons.Filled.CameraAlt,
                 contentDescription = if (cameraFacing == StudyCameraFacing.Back) {
                     "切换到前置摄像头"
@@ -855,6 +701,11 @@ private fun StudyPreviewSurface(
 ) {
     val context = LocalContext.current
     val textureView = remember(context) { TextureView(context) }
+    // 手动旋转校正（0/90/180/270）：变化时重新布局预览
+    val rotationOffset by StudySessionState.state
+        .map { it.previewRotationOffset }
+        .collectAsStateWithLifecycle(initialValue = 0)
+    val applyLayoutRef = remember { mutableStateOf<(() -> Unit)?>(null) }
 
     DisposableEffect(textureView) {
         var attachedSurfaceTexture: android.graphics.SurfaceTexture? = null
@@ -866,8 +717,14 @@ private fun StudyPreviewSurface(
 
         fun applyLayout() {
             val info = previewInfo ?: return
-            applyCameraViewLayout(textureView, info, currentDisplayRotation(context))
+            applyCameraViewLayout(
+                textureView,
+                info,
+                currentDisplayRotation(context),
+                rotationOffset
+            )
         }
+        applyLayoutRef.value = ::applyLayout
 
         val listener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(
@@ -966,8 +823,14 @@ private fun StudyPreviewSurface(
             attachedSurfaceTexture?.let(StudyObservationEngine::detachPreview)
             attachedSurfaceTexture = null
             textureView.surfaceTextureListener = null
+            applyLayoutRef.value = null
             onPreviewStateChanged(false)
         }
+    }
+
+    // 手动旋转校正变化时立即重排预览
+    LaunchedEffect(rotationOffset) {
+        applyLayoutRef.value?.invoke()
     }
 
     AndroidView(
@@ -991,19 +854,24 @@ private fun StudyPreviewSurface(
 private fun applyCameraViewLayout(
     textureView: TextureView,
     info: StudyPreviewInfo,
-    displayRotation: Int
+    displayRotation: Int,
+    manualRotationOffset: Int = 0
 ) {
     val container = textureView.parent as? FrameLayout ?: return
     if (container.width <= 0 || container.height <= 0) {
-        container.post { applyCameraViewLayout(textureView, info, displayRotation) }
+        container.post {
+            applyCameraViewLayout(textureView, info, displayRotation, manualRotationOffset)
+        }
         return
     }
 
-    val rotation = StudyPreviewOrientation.previewRotationDegrees(
-        sensorOrientationDegrees = info.rotationDegrees,
-        isFrontCamera = info.isFrontCamera,
-        displayRotation = displayRotation
-    )
+    val rotation = (
+        StudyPreviewOrientation.previewRotationDegrees(
+            sensorOrientationDegrees = info.rotationDegrees,
+            isFrontCamera = info.isFrontCamera,
+            displayRotation = displayRotation
+        ) + manualRotationOffset
+        ) % 360
     val uprightWidth = if (rotation == 90 || rotation == 270) info.height else info.width
     val uprightHeight = if (rotation == 90 || rotation == 270) info.width else info.height
     val scale = maxOf(
@@ -1033,6 +901,12 @@ private fun StudyFullscreenPreview(
     chat: List<ChatMessage>,
     currentText: String,
     listening: Boolean,
+    voiceActive: Boolean,
+    inputDraft: String,
+    onInputDraftChange: (String) -> Unit,
+    onSendFromLive: (String) -> Unit,
+    onVoiceClick: () -> Unit,
+    onQuickCommand: (QuickCommand) -> Unit,
     cameraFacing: StudyCameraFacing,
     showSetupGuide: Boolean,
     onSwitchCamera: () -> Unit,
@@ -1107,11 +981,32 @@ private fun StudyFullscreenPreview(
                 )
             }
             Spacer(modifier = Modifier.weight(1f))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Filled.Star,
+                    contentDescription = null,
+                    tint = Color(0xFFFFB300),
+                    modifier = Modifier.size(16.dp)
+                )
+                Text(
+                    text = "${StudyRewardEngine.liveStars(state)}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Color.White
+                )
+            }
+            Spacer(modifier = Modifier.width(10.dp))
             Text(
                 text = "取帧 ${state.observationFrames}",
                 style = MaterialTheme.typography.labelMedium,
                 color = Color.White
             )
+            IconButton(onClick = StudySessionState::rotatePreview) {
+                Icon(
+                    Icons.Filled.Refresh,
+                    contentDescription = "旋转画面",
+                    tint = Color.White
+                )
+            }
             IconButton(onClick = onSwitchCamera) {
                 Icon(
                     Icons.Filled.CameraAlt,
@@ -1177,6 +1072,30 @@ private fun StudyFullscreenPreview(
                     LiveChatBubble(message = message, emphasize = false)
                 }
             }
+
+            // 全屏沉浸时快捷指令同样可用，不用猜语音指令
+            StudyQuickCommandRow(
+                commands = StudyCommandCatalog.forContext(
+                    mode = state.mode,
+                    phase = state.phase,
+                    hasPage = if (state.mode == StudyMode.Homework) {
+                        !state.homeworkPage?.items.isNullOrEmpty()
+                    } else {
+                        !state.readingPage?.sentences.isNullOrEmpty()
+                    }
+                ),
+                enabled = !state.captureRunning,
+                darkStyle = true,
+                onCommand = onQuickCommand
+            )
+
+            StudyLiveInputBar(
+                value = inputDraft,
+                onValueChange = onInputDraftChange,
+                voiceActive = voiceActive,
+                onSend = { onSendFromLive(inputDraft) },
+                onVoiceClick = onVoiceClick
+            )
         }
     }
 }
@@ -1288,6 +1207,7 @@ private fun StudyEntry(
 @Composable
 private fun StudySessionHeader(
     state: StudyRuntimeState,
+    liveStars: Int,
     onStop: () -> Unit
 ) {
     val issue = state.observationIssue.ifBlank { state.lastCaptureFailure }
@@ -1317,6 +1237,19 @@ private fun StudySessionHeader(
                     text = "$status · 剩余 ${formatSeconds(remaining)}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.primary
+                )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Filled.Star,
+                    contentDescription = "本次星星",
+                    tint = Color(0xFFFFB300),
+                    modifier = Modifier.size(20.dp)
+                )
+                Text(
+                    text = "$liveStars",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color(0xFFFFB300)
                 )
             }
             if (state.captureRunning) {
@@ -1410,68 +1343,6 @@ private fun StudyCameraSetupPanel(
                 Text("开始专注")
             }
         }
-    }
-}
-
-@Composable
-private fun StudySummaryDialog(
-    record: StudySessionRecord,
-    onClose: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onClose,
-        title = { Text("本次陪学完成") },
-        text = {
-            Text(StudySessionManager.friendlySummary(record))
-        },
-        confirmButton = {
-            TextButton(onClick = onClose) {
-                Icon(Icons.Filled.Check, contentDescription = null)
-                Text("完成")
-            }
-        }
-    )
-}
-
-@Composable
-private fun StudyRecordRow(record: StudySessionRecord) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(12.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                if (record.mode == StudyMode.Homework) {
-                    Icons.Filled.School
-                } else {
-                    Icons.AutoMirrored.Filled.MenuBook
-                },
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(18.dp)
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = if (record.mode == StudyMode.Homework) "作业" else "阅读",
-                style = MaterialTheme.typography.titleSmall
-            )
-            Spacer(modifier = Modifier.weight(1f))
-            Text(
-                text = SimpleDateFormat("M月d日 HH:mm", Locale.getDefault())
-                    .format(Date(record.startedAt)),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Spacer(modifier = Modifier.height(6.dp))
-        Text(
-            text = StudySessionManager.friendlySummary(record),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
     }
 }
 

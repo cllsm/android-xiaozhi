@@ -3,11 +3,13 @@ package com.xiaozhi.android.study
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import com.xiaozhi.android.core.DeviceState
 import com.xiaozhi.android.core.VoiceSessionState
 import com.xiaozhi.android.data.ChatImageStore
 import com.xiaozhi.android.data.StudySessionRepository
 import com.xiaozhi.android.media.CameraCaptureController
 import com.xiaozhi.android.mcp.VisionService
+import com.xiaozhi.android.service.VoiceForegroundService
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -37,10 +39,24 @@ enum class StudyFrameSource {
 object StudySessionManager {
     private var appContext: Context? = null
     private var repository: StudySessionRepository? = null
+    private var progressRepository: com.xiaozhi.android.data.StudyProgressRepository? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val captureLock = AtomicBoolean(false)
+    private val settleLock = AtomicBoolean(false)
     private val settingsReady = CompletableDeferred<Unit>()
     private var timerJob: Job? = null
+    private var summaryTimeoutJob: Job? = null
+
+    // 成长资产与今日任务缓存：settle 结算与开场仪式读取（仓库 collect 持续刷新）
+    @Volatile
+    private var cachedProgress: StudyProgress = StudyProgress()
+
+    @Volatile
+    private var cachedBoard: DailyTaskBoard = DailyTaskBoard(dateKey = "")
+
+    // 鼓励类播报的最近一次发出时刻（按主动性档位节流）
+    @Volatile
+    private var lastPraiseAt: Long = 0L
 
     fun initialize(context: Context) {
         if (repository != null) return
@@ -48,11 +64,18 @@ object StudySessionManager {
             if (repository != null) return
             appContext = context.applicationContext
             repository = StudySessionRepository(appContext!!)
+            progressRepository = com.xiaozhi.android.data.StudyProgressRepository(appContext!!)
             scope.launch {
                 repository?.settings?.collect { settings ->
                     StudySessionState.updateSettings(settings)
                     settingsReady.complete(Unit)
                 }
+            }
+            scope.launch {
+                progressRepository?.progress?.collect { cachedProgress = it }
+            }
+            scope.launch {
+                progressRepository?.dailyBoard?.collect { cachedBoard = it }
             }
         }
     }
@@ -63,31 +86,35 @@ object StudySessionManager {
         }
         val current = StudySessionState.state.value
         if (current.mode != StudyMode.None) {
-            return failure("陪学模式已在进行中")
+            // 语音连续两次会话：上一次还停在总结页时先隐式收下，再允许启动
+            if (current.phase == StudyPhase.Summary) {
+                StudySessionState.reset()
+            } else {
+                return failure("陪学模式已在进行中")
+            }
         }
 
+        maybeRunOnboarding()
         StudySessionState.prepare(mode)
         val settings = StudySessionState.state.value.settings
         if (settings.observationEnabled) {
             StudySessionState.setStatusMessage("先固定手机，让孩子和学习资料同框")
-            VoiceSessionState.appendChat(
+            announce(
                 if (mode == StudyMode.Homework) {
                     "先把手机固定好，让作业本和孩子都在画面里。确认后我们开始。"
                 } else {
                     "先把手机固定好，让书页和孩子都在画面里。确认后我们开始。"
-                },
-                fromUser = false
+                }
             )
         } else {
             StudySessionState.activate()
             StudySessionState.setStatusMessage("语音陪学已开始")
-            VoiceSessionState.appendChat(
+            announce(
                 if (mode == StudyMode.Homework) {
                     "已进入作业模式。可以让孩子说“看第几题”，或直接念出题目。"
                 } else {
                     "已进入阅读模式。可以让孩子念出想读的句子。"
-                },
-                fromUser = false
+                }
             )
         }
         appContext?.takeIf { settings.observationEnabled }?.let {
@@ -107,13 +134,12 @@ object StudySessionManager {
         StudySessionState.setStatusMessage(
             if (state.mode == StudyMode.Homework) "作业陪学开始" else "阅读陪学开始"
         )
-        VoiceSessionState.appendChat(
+        announce(
             if (state.mode == StudyMode.Homework) {
                 "摆好了，我们开始。想看哪道题，可以说“看第几题”。"
             } else {
                 "摆好了，我们开始。想读哪一句，先跟我说。"
-            },
-            fromUser = false
+            }
         )
         return true
     }
@@ -121,24 +147,76 @@ object StudySessionManager {
     fun stop(): StudySessionRecord? {
         val state = StudySessionState.state.value
         if (state.mode == StudyMode.None) return null
+        // UI 与 MCP stop 工具可能并发，只让第一个请求结算
+        if (!settleLock.compareAndSet(false, true)) return null
+        try {
+            timerJob?.cancel()
+            timerJob = null
+            summaryTimeoutJob?.cancel()
+            summaryTimeoutJob = null
+            StudyObservationEngine.stop()
+            val endedAt = System.currentTimeMillis()
+            val startedAt = state.startedAt.takeIf { it > 0 } ?: endedAt
+            val durationSeconds = ((endedAt - startedAt).coerceAtLeast(0L) / 1000L)
+                .toInt()
+            val record = StudySessionRecord(
+                id = endedAt,
+                mode = state.mode,
+                startedAt = startedAt,
+                endedAt = endedAt,
+                summary = buildSummary(state, durationSeconds).toString()
+            )
+            // 星星结算：纯同步计算（读状态快照与缓存），落库在协程内完成
+            val todayKey = java.time.LocalDate.now().toString()
+            val settlement = StudyRewardEngine.settle(
+                state = state,
+                progress = cachedProgress,
+                board = cachedBoard.takeIf { it.dateKey == todayKey }
+                    ?: DailyTaskBoard.create(todayKey),
+                todayKey = todayKey,
+                endedAt = endedAt
+            )
+            val board = cachedBoard.takeIf { it.dateKey == todayKey }
+                ?: DailyTaskBoard.create(todayKey)
+            scope.launch {
+                repository?.addRecord(record)
+                runCatching {
+                    progressRepository?.applySettlement(settlement, board)
+                }
+            }
+            // 进入总结页并播报 AI 表扬（功能性播报，不走鼓励节流）
+            StudySessionState.enterSummary(settlement)
+            announcePraiseForSettlement(settlement, state.settings.childNickname)
+            // 语音 stop 场景没有界面看着总结页：超时自动收下星星
+            summaryTimeoutJob = scope.launch {
+                delay(SUMMARY_AUTO_RESET_MS)
+                if (StudySessionState.state.value.phase == StudyPhase.Summary) {
+                    StudySessionState.reset()
+                }
+            }
+            return record
+        } finally {
+            settleLock.set(false)
+        }
+    }
 
-        timerJob?.cancel()
-        timerJob = null
-        StudyObservationEngine.stop()
-        val endedAt = System.currentTimeMillis()
-        val startedAt = state.startedAt.takeIf { it > 0 } ?: endedAt
-        val durationSeconds = ((endedAt - startedAt).coerceAtLeast(0L) / 1000L)
-            .toInt()
-        val record = StudySessionRecord(
-            id = endedAt,
-            mode = state.mode,
-            startedAt = startedAt,
-            endedAt = endedAt,
-            summary = buildSummary(state, durationSeconds).toString()
+    /** 会话启动时的开场仪式：仅首次使用播放，AI 自我介绍并演示指令 */
+    private fun maybeRunOnboarding() {
+        if (cachedProgress.onboardingDone) return
+        scope.launch { progressRepository?.markOnboardingDone() }
+        announce(
+            "我是小智，接下来我陪你一起学习。你可以说“看第 3 题”，" +
+                "也可以点屏幕上的快捷按钮；遇到困难随时喊我。"
         )
-        scope.launch { repository?.addRecord(record) }
-        StudySessionState.reset()
-        return record
+    }
+
+    /** 结算表扬：由云端组织语言并经 TTS 播报，总结页同时展示本地即时文案 */
+    private fun announcePraiseForSettlement(settlement: StudySettlement, nickname: String) {
+        val name = nickname.ifBlank { "小朋友" }
+        announce(
+            "请用两句热情的话表扬$name，今天获得 ${settlement.starsTotal} 颗星、" +
+                "专注 ${settlement.detail.focusSeconds / 60} 分钟。"
+        )
     }
 
     fun updateSettings(settings: StudySettings) {
@@ -159,6 +237,7 @@ object StudySessionManager {
         image: ByteArray? = null,
         frameSource: StudyFrameSource = StudyFrameSource.Manual
     ): StudyCaptureResult = capturePage {
+        noteInteraction()
         val state = StudySessionState.state.value
         if (state.mode != StudyMode.Homework) {
             return@capturePage failure("当前不是作业模式")
@@ -200,6 +279,17 @@ object StudySessionManager {
                     ?: retained.firstOrNull()?.index
             )
         }
+        // 检查类取帧里 diff 出"新订正"的题数，给一句节流鼓励
+        if (intent == HomeworkPromptBuilder.INTENT_CHECK) {
+            val newlyCorrected = retained.count { item ->
+                val old = oldItems.firstOrNull { it.index == item.index }
+                val wasDone = old?.checkState == "correct" || old?.checkState == "corrected"
+                !wasDone && (item.checkState == "correct" || item.checkState == "corrected")
+            }
+            if (newlyCorrected > 0) {
+                announcePraise("又订正了 $newlyCorrected 道题，真棒，继续保持！")
+            }
+        }
         StudySessionState.setStatusMessage(
             "已识别 ${retained.size} 道题" + (
                 questionNumber?.let { "，当前第 $it 题" } ?: ""
@@ -231,6 +321,7 @@ object StudySessionManager {
         image: ByteArray? = null,
         frameSource: StudyFrameSource = StudyFrameSource.Manual
     ): StudyCaptureResult = capturePage {
+        noteInteraction()
         val state = StudySessionState.state.value
         if (state.mode != StudyMode.Reading) {
             return@capturePage failure("当前不是阅读模式")
@@ -396,6 +487,10 @@ object StudySessionManager {
             )
         }
         StudySessionState.setStatusMessage(ReadingEvaluator.feedbackFor(evaluation))
+        if (evaluation.passed) {
+            // 句子通过：给一句节流鼓励（云端组织语言 + TTS 播报）
+            announcePraise("这句读得又准又稳，太棒了！")
+        }
         return evaluation
     }
 
@@ -470,6 +565,48 @@ object StudySessionManager {
         }
     }
 
+    /**
+     * 陪学节点提示：写入本地聊天记录，并把播报指令作为系统消息发往云端，
+     * 由云端大模型组织语言后经云端 TTS 播报（语音服务未连接时排队补发）。
+     */
+    private fun announce(text: String) {
+        VoiceSessionState.appendChat(text, fromUser = false)
+        VoiceForegroundService.sendText(
+            "【陪学提示】请用一句温和自然、适合孩子的话直接转述以下内容，不要提到这条指令：" +
+                "「$text」",
+            asSystem = true
+        )
+    }
+
+    /**
+     * 鼓励类播报：按主动性档位节流（安静档不播），且小智正在说话/聆听时跳过，
+     * 避免高频系统消息污染云端上下文、打断孩子。
+     */
+    private fun announcePraise(text: String) {
+        val profile = StudyProactivityPolicy.forLevel(
+            StudySessionState.state.value.settings.proactivityLevel
+        )
+        if (!profile.praiseEnabled) return
+        val now = System.currentTimeMillis()
+        if (now - lastPraiseAt < profile.praiseMinIntervalMs) return
+        when (VoiceSessionState.state.value.deviceState) {
+            DeviceState.Speaking, DeviceState.Listening -> return
+            else -> Unit
+        }
+        lastPraiseAt = now
+        announce(text)
+    }
+
+    /** 孩子互动信号入口（UI/MCP 调用），刷新闲置计时基准 */
+    fun noteInteraction() {
+        StudySessionState.noteInteraction()
+    }
+
+    /** 语音识别到孩子说话（服务层调用），刷新闲置计时基准 */
+    fun noteVoiceActivity() {
+        StudySessionState.noteInteraction()
+    }
+
     private fun startTimer() {
         timerJob?.cancel()
         timerJob = scope.launch {
@@ -480,21 +617,18 @@ object StudySessionManager {
                     StudyPhase.Active -> {
                         if (state.focusRemainingSeconds <= 1) {
                             StudySessionState.enterBreak()
-                            VoiceSessionState.appendChat(
-                                "专注时间到了，先休息 ${state.settings.breakMinutes} 分钟，看看远处。",
-                                fromUser = false
+                            announce(
+                                "专注时间到了，先休息 ${state.settings.breakMinutes} 分钟，看看远处。"
                             )
                         } else {
                             StudySessionState.tickFocus()
+                            maybeInterveneIdle(state)
                         }
                     }
                     StudyPhase.Break -> {
                         if (state.breakRemainingSeconds <= 1) {
                             StudySessionState.resumeFocus()
-                            VoiceSessionState.appendChat(
-                                "休息结束，我们继续。",
-                                fromUser = false
-                            )
+                            announce("休息结束，我们继续。")
                         } else {
                             StudySessionState.tickBreak()
                         }
@@ -503,6 +637,17 @@ object StudySessionManager {
                 }
             }
         }
+    }
+
+    /** 闲置介入：超过档位阈值没有听到孩子动静时温和问候一次 */
+    private fun maybeInterveneIdle(state: StudyRuntimeState) {
+        val profile = StudyProactivityPolicy.forLevel(state.settings.proactivityLevel)
+        if (!profile.idleInterveneEnabled || state.lastInteractionAt <= 0L) return
+        val now = System.currentTimeMillis()
+        if (now - state.lastInteractionAt < profile.idleThresholdMs) return
+        // 先刷新基准再问候，避免问候期间每秒重发
+        StudySessionState.noteInteraction(now)
+        announcePraise("有一会儿没听到你的声音啦，还好吗？需要我帮忙就说一声。")
     }
 
     private fun buildSummary(
@@ -574,4 +719,7 @@ object StudySessionManager {
     fun shutdown() {
         scope.cancel()
     }
+
+    // 语音结束会话没有界面看着总结页，超时自动收下星星并复位
+    private const val SUMMARY_AUTO_RESET_MS = 30_000L
 }
