@@ -7,7 +7,8 @@ data class McpToolDefinition(
     val name: String,
     val description: String,
     val properties: JSONObject = JSONObject(),
-    val required: List<String> = emptyList()
+    val required: List<String> = emptyList(),
+    val resultTextLimitBytes: Int = DEFAULT_RESULT_TEXT_BYTES
 ) {
     fun toJson(): JSONObject {
         val schema = JSONObject()
@@ -28,6 +29,8 @@ interface McpTool {
 
     fun call(arguments: JSONObject): Any?
 }
+
+private const val DEFAULT_RESULT_TEXT_BYTES = 760
 
 fun Any?.toJsonValue(): Any? {
     return when (this) {

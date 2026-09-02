@@ -39,6 +39,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -72,6 +73,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Fullscreen
@@ -567,6 +569,7 @@ private fun HomeScreen(
     var pendingVisionAction by remember { mutableStateOf<DirectVisionAction?>(null) }
     var pendingVisionPrompt by remember { mutableStateOf<String?>(null) }
     var pendingVisionImage by remember { mutableStateOf<Uri?>(null) }
+    var draftImage by remember { mutableStateOf<Uri?>(null) }
     var viewingImage by remember { mutableStateOf<String?>(null) }
     var toolsExpanded by remember { mutableStateOf(false) }
     val chatListState = rememberLazyListState()
@@ -716,14 +719,32 @@ private fun HomeScreen(
         )
     }
 
+    fun submitHomeInput() {
+        val text = textDraft.trim()
+        val image = draftImage
+        if (image == null) {
+            if (text.isNotEmpty() && sendFromHome(text)) {
+                textDraft = ""
+                toolsExpanded = false
+            }
+            return
+        }
+
+        requestImagePrompt(
+            prompt = text.ifBlank { "描述这张图片的内容" },
+            image = image
+        )
+        textDraft = ""
+        draftImage = null
+        toolsExpanded = false
+    }
+
     val imagePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent()
     ) { image ->
         if (image != null) {
-            val prompt = textDraft.trim().ifBlank { "描述这张图片的内容" }
-            textDraft = ""
+            draftImage = image
             toolsExpanded = false
-            requestImagePrompt(prompt, image)
         }
     }
 
@@ -1024,9 +1045,17 @@ private fun HomeScreen(
                 )
             }
 
+            draftImage?.let { image ->
+                PendingImagePreview(
+                    image = image,
+                    onRemove = { draftImage = null }
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
+                verticalAlignment = Alignment.Bottom,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 RoundIconButton(
@@ -1045,31 +1074,27 @@ private fun HomeScreen(
                     onValueChange = { textDraft = it },
                     modifier = Modifier
                         .weight(1f)
-                        .height(46.dp)
-                        .clip(RoundedCornerShape(23.dp))
+                        .heightIn(min = 46.dp, max = 132.dp)
+                        .clip(RoundedCornerShape(20.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant)
-                        .padding(horizontal = 14.dp),
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
                     textStyle = MaterialTheme.typography.bodyMedium.copy(
                         color = MaterialTheme.colorScheme.onBackground
                     ),
-                    singleLine = true,
+                    minLines = 1,
+                    maxLines = 6,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(
-                        onSend = {
-                            val text = textDraft.trim()
-                            if (text.isNotEmpty()) {
-                                if (sendFromHome(text)) {
-                                    textDraft = ""
-                                    toolsExpanded = false
-                                }
-                            }
-                        }
+                        onSend = { submitHomeInput() }
                     ),
                     decorationBox = { innerTextField ->
-                        Box(contentAlignment = Alignment.CenterStart) {
+                        Box(
+                            modifier = Modifier.fillMaxHeight(),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
                             if (textDraft.isEmpty()) {
                                 Text(
-                                    "给小智发消息",
+                                    if (draftImage == null) "给小智发消息" else "补充图片要求",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -1120,19 +1145,15 @@ private fun HomeScreen(
                         .size(46.dp)
                         .clip(CircleShape)
                         .background(
-                            if (textDraft.isBlank()) {
+                            if (textDraft.isBlank() && draftImage == null) {
                                 MaterialTheme.colorScheme.surfaceVariant
                             } else {
                                 MaterialTheme.colorScheme.primary
                             }
                         )
                         .clickable {
-                            val text = textDraft.trim()
-                            if (text.isNotEmpty()) {
-                                if (sendFromHome(text)) {
-                                    textDraft = ""
-                                    toolsExpanded = false
-                                }
+                            if (textDraft.isNotBlank() || draftImage != null) {
+                                submitHomeInput()
                             }
                         },
                     contentAlignment = Alignment.Center
@@ -1140,7 +1161,7 @@ private fun HomeScreen(
                     Icon(
                         Icons.AutoMirrored.Filled.Send,
                         contentDescription = "发送",
-                        tint = if (textDraft.isBlank()) {
+                        tint = if (textDraft.isBlank() && draftImage == null) {
                             MaterialTheme.colorScheme.onSurfaceVariant
                         } else {
                             MaterialTheme.colorScheme.onPrimary
@@ -1416,7 +1437,7 @@ private fun StudyLiveInput(
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
+        verticalAlignment = Alignment.Bottom,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         BasicTextField(
@@ -1424,16 +1445,20 @@ private fun StudyLiveInput(
             onValueChange = onValueChange,
             modifier = Modifier
                 .weight(1f)
-                .height(46.dp)
+                .heightIn(min = 46.dp, max = 112.dp)
                 .clip(RoundedCornerShape(8.dp))
                 .background(Color.Black.copy(alpha = 0.58f))
-                .padding(horizontal = 13.dp),
+                .padding(horizontal = 13.dp, vertical = 10.dp),
             textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color.White),
-            singleLine = true,
+            minLines = 1,
+            maxLines = 4,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
             keyboardActions = KeyboardActions(onSend = { onSend() }),
             decorationBox = { field ->
-                Box(contentAlignment = Alignment.CenterStart) {
+                Box(
+                    modifier = Modifier.fillMaxHeight(),
+                    contentAlignment = Alignment.CenterStart
+                ) {
                     if (value.isEmpty()) {
                         Text(
                             "给小智发消息",
@@ -1944,6 +1969,96 @@ private fun RoundIconButton(
             }
         ) {
             icon()
+        }
+    }
+}
+
+@Composable
+private fun PendingImagePreview(
+    image: Uri,
+    onRemove: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        ContentUriImage(
+            uri = image,
+            contentDescription = "待发送图片",
+            modifier = Modifier.size(54.dp)
+        )
+        Text(
+            text = "已选择图片，可补充要求后发送",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f)
+        )
+        RoundIconButton(
+            icon = {
+                Icon(Icons.Filled.Close, contentDescription = "移除图片")
+            },
+            onClick = onRemove
+        )
+    }
+}
+
+@Composable
+private fun ContentUriImage(
+    uri: Uri,
+    contentDescription: String?,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    var bitmap by remember(uri) {
+        mutableStateOf<android.graphics.Bitmap?>(null)
+    }
+
+    LaunchedEffect(uri) {
+        bitmap = withContext(Dispatchers.IO) {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                BitmapFactory.decodeStream(input, null, bounds)
+            }
+            var sampleSize = 1
+            while (
+                bounds.outWidth / (sampleSize * 2) >= 512 &&
+                bounds.outHeight / (sampleSize * 2) >= 512
+            ) {
+                sampleSize *= 2
+            }
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                BitmapFactory.decodeStream(
+                    input,
+                    null,
+                    BitmapFactory.Options().apply { inSampleSize = sampleSize }
+                )
+            }
+        }
+    }
+
+    val loadedBitmap = bitmap
+    if (loadedBitmap != null) {
+        Image(
+            bitmap = loadedBitmap.asImageBitmap(),
+            contentDescription = contentDescription,
+            modifier = modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            contentScale = ContentScale.Crop
+        )
+    } else {
+        Box(
+            modifier = modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Filled.Image,
+                contentDescription = contentDescription,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }

@@ -14,6 +14,7 @@ object McpToolRegistry {
             add(AppLauncherTool(context))
             add(InstalledAppsTool(context))
             add(LatestVisionResultTool())
+            add(LatestUserTextTool())
             add(ScreenshotTool(context))
             add(CameraTool(context))
             add(StudyStartTool())

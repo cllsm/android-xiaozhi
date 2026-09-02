@@ -121,7 +121,10 @@ class McpServerProtocol(
             else -> {
                 val rawResult = result.getOrThrow()
                 onToolResult(rawResult, false)
-                resultResponse(id, toolCallResult(rawResult))
+                resultResponse(
+                    id,
+                    toolCallResult(rawResult, tool.definition.resultTextLimitBytes)
+                )
             }
         }
     }
@@ -157,11 +160,19 @@ class McpServerProtocol(
             return toolCallResult(result, isError = false)
         }
 
+        fun toolCallResult(result: Any?, maxTextBytes: Int): JSONObject {
+            return toolCallResult(result, isError = false, maxTextBytes = maxTextBytes)
+        }
+
         fun errorToolCallResult(message: String): JSONObject {
             return toolCallResult(message, isError = true)
         }
 
-        private fun toolCallResult(result: Any?, isError: Boolean): JSONObject {
+        private fun toolCallResult(
+            result: Any?,
+            isError: Boolean,
+            maxTextBytes: Int = MAX_TOOL_TEXT_BYTES
+        ): JSONObject {
             val value = result.toJsonValue()
             val text = when (value) {
                 null -> ""
@@ -174,7 +185,7 @@ class McpServerProtocol(
                     JSONArray().put(
                         JSONObject()
                             .put("type", "text")
-                            .put("text", boundToolText(text))
+                            .put("text", boundToolText(text, maxTextBytes))
                     )
                 )
                 .put("isError", isError)
@@ -184,11 +195,11 @@ class McpServerProtocol(
             return response.toString().toByteArray(Charsets.UTF_8).size
         }
 
-        private fun boundToolText(text: String): String {
-            return if (jsonEscapedUtf8Bytes(text) <= MAX_TOOL_TEXT_BYTES) {
+        private fun boundToolText(text: String, maxTextBytes: Int): String {
+            return if (jsonEscapedUtf8Bytes(text) <= maxTextBytes) {
                 text
             } else {
-                boundTextForJsonBudget(text, MAX_TOOL_TEXT_BYTES - TRUNCATION_NOTE_BYTES) +
+                boundTextForJsonBudget(text, maxTextBytes - TRUNCATION_NOTE_BYTES) +
                     TRUNCATION_NOTE
             }
         }

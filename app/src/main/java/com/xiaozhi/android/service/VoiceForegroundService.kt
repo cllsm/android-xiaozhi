@@ -40,6 +40,7 @@ import com.xiaozhi.android.media.VoiceMusicInterruptionPolicy
 import com.xiaozhi.android.mcp.AppLauncherTool
 import com.xiaozhi.android.mcp.McpEndpointManager
 import com.xiaozhi.android.mcp.McpServerProtocol
+import com.xiaozhi.android.mcp.UserTextStore
 import com.xiaozhi.android.mcp.VisionResultStore
 import com.xiaozhi.android.mcp.VisionService
 import com.xiaozhi.android.network.OtaClient
@@ -842,6 +843,7 @@ class VoiceForegroundService : LifecycleService() {
                         }
                         VoiceSessionState.updateConversation(currentText = text)
                         if (text.isNotBlank() && (state.isBlank() || state == "final")) {
+                            val suppressUserTextEcho = UserTextStore.consumeEcho(text)
                             val studyState = StudySessionState.state.value
                             if (studyState.mode != StudyMode.None) {
                                 StudyObservationEngine.requestSpeechFrame()
@@ -870,7 +872,9 @@ class VoiceForegroundService : LifecycleService() {
                                 playMusicLocally(songName)
                                 return
                             }
-                            VoiceSessionState.appendChat(text, fromUser = true)
+                            if (!suppressUserTextEcho) {
+                                VoiceSessionState.appendChat(text, fromUser = true)
+                            }
                         }
                     }
                     message.optString("emotion").takeIf { it.isNotBlank() }?.let { emotion ->
@@ -1551,15 +1555,31 @@ class VoiceForegroundService : LifecycleService() {
                 }
             }
 
+            val isLongText = trimmed.length > DIRECT_TEXT_MAX_CHARS
+            val outboundText = if (isLongText) {
+                UserTextStore.update(trimmed)
+                UserTextStore.markPendingEcho()
+                UserTextStore.REQUEST_TEXT
+            } else {
+                trimmed
+            }
+
             activeWebSocket.get()?.let { socket ->
-                if (socket.sendText(trimmed)) {
+                if (socket.sendText(outboundText)) {
                     VoiceSessionState.appendChat(trimmed, fromUser = true)
+                    if (isLongText) {
+                        Log.i(
+                            TAG,
+                            "Long text stored for MCP, length=${trimmed.length}, " +
+                                "requestDelivered=true"
+                        )
+                    }
                     return true
                 }
             }
 
             if (companionActive.get()) {
-                pendingTexts.add(trimmed)
+                pendingTexts.add(outboundText)
                 VoiceSessionState.appendChat(trimmed, fromUser = true)
                 VoiceSessionState.update(
                     status = VoiceSessionState.state.value.status,
@@ -1573,7 +1593,7 @@ class VoiceForegroundService : LifecycleService() {
             if (context?.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
                 PackageManager.PERMISSION_GRANTED
             ) {
-                pendingTexts.add(trimmed)
+                pendingTexts.add(outboundText)
                 context.startForegroundService(
                     Intent(context, VoiceForegroundService::class.java)
                 )
@@ -1587,5 +1607,7 @@ class VoiceForegroundService : LifecycleService() {
             )
             return false
         }
+
+        private const val DIRECT_TEXT_MAX_CHARS = 30
     }
 }
