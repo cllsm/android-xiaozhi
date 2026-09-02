@@ -38,8 +38,8 @@ android {
         applicationId 'com.xiaozhi.android'
         minSdk 26
         targetSdk 36
-        versionCode 8
-        versionName '0.4.1'
+        versionCode 9
+        versionName '1.0.0'
         buildConfigField 'String', 'NETEASE_LOSSLESS_APP_KEY', "\"${escapedNeteaseLosslessAppKey}\""
         if (releaseAbis) {
             ndk {
