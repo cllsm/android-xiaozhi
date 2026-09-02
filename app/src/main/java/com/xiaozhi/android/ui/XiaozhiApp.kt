@@ -39,7 +39,6 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -1088,10 +1087,7 @@ private fun HomeScreen(
                         onSend = { submitHomeInput() }
                     ),
                     decorationBox = { innerTextField ->
-                        Box(
-                            modifier = Modifier.fillMaxHeight(),
-                            contentAlignment = Alignment.CenterStart
-                        ) {
+                        Box(contentAlignment = Alignment.CenterStart) {
                             if (textDraft.isEmpty()) {
                                 Text(
                                     if (draftImage == null) "给小智发消息" else "补充图片要求",
@@ -1455,10 +1451,7 @@ private fun StudyLiveInput(
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
             keyboardActions = KeyboardActions(onSend = { onSend() }),
             decorationBox = { field ->
-                Box(
-                    modifier = Modifier.fillMaxHeight(),
-                    contentAlignment = Alignment.CenterStart
-                ) {
+                Box(contentAlignment = Alignment.CenterStart) {
                     if (value.isEmpty()) {
                         Text(
                             "给小智发消息",
