@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider 共享路径：系统相机拍照的临时输出目录 -->
+<paths>
+    <files-path
+        name="camera_capture"
+        path="camera_capture/" />
+</paths>

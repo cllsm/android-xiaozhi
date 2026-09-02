@@ -2,6 +2,8 @@ package com.xiaozhi.android.mcp
 
 import android.content.Context
 import android.util.Log
+import com.xiaozhi.android.core.ConnectionStatus
+import com.xiaozhi.android.core.VoiceSessionState
 import com.xiaozhi.android.data.SettingsRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -13,6 +15,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -32,23 +35,33 @@ class McpEndpointManager(
     ) -> Unit
 ) {
     private val appContext = context.applicationContext
-    private val managerScope = CoroutineScope(
-        SupervisorJob(scope.coroutineContext[Job]) + Dispatchers.Default
-    )
+    private val parentJob = scope.coroutineContext[Job]
+    private var managerScope: CoroutineScope? = null
     private val started = AtomicBoolean(false)
     private var watcherJob: Job? = null
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    private val requestDispatcher = Dispatchers.IO.limitedParallelism(1)
+    private val requestDispatcher = Dispatchers.IO.limitedParallelism(REQUEST_PARALLELISM)
 
     fun start() {
         if (!started.compareAndSet(false, true)) return
-        watcherJob = managerScope.launch {
-            settingsRepository.settings
-                .map { it.mcpEndpointUrl.trim() }
-                .distinctUntilChanged()
-                .collectLatest { endpointUrl ->
-                    if (endpointUrl.isNotBlank()) runConnectionLoop(endpointUrl)
+        // 每次 start 重建协程作用域，保证 stop 之后可以再次 start
+        val scope = CoroutineScope(SupervisorJob(parentJob) + Dispatchers.Default)
+        managerScope = scope
+        watcherJob = scope.launch {
+            combine(
+                settingsRepository.settings
+                    .map { it.mcpEndpointUrl.trim() }
+                    .distinctUntilChanged(),
+                // 语音链路进入待命/断开（Disconnected）时暂停 MCP 重连，恢复后立即重连
+                VoiceSessionState.state
+                    .map { it.status == ConnectionStatus.Disconnected }
+                    .distinctUntilChanged()
+            ) { endpointUrl, voiceDown -> endpointUrl to voiceDown }
+                .collectLatest { (endpointUrl, voiceDown) ->
+                    if (endpointUrl.isNotBlank() && !voiceDown) {
+                        runConnectionLoop(endpointUrl)
+                    }
                 }
         }
     }
@@ -57,7 +70,8 @@ class McpEndpointManager(
         if (!started.compareAndSet(true, false)) return
         watcherJob?.cancel()
         watcherJob = null
-        managerScope.cancel()
+        managerScope?.cancel()
+        managerScope = null
     }
 
     private suspend fun runConnectionLoop(endpointUrl: String) {
@@ -157,5 +171,9 @@ class McpEndpointManager(
         private const val INITIAL_RECONNECT_DELAY_MS = 1_000L
         private const val MAX_RECONNECT_DELAY_MS = 30_000L
         private const val MIN_CONNECTED_DURATION_MS = 30_000L
+
+        // 慢工具（截屏识别、天气查询等阻塞调用）超时后线程不会立即释放，
+        // 需要一定并行度避免单个慢请求阻塞后续所有 MCP 请求
+        private const val REQUEST_PARALLELISM = 4
     }
 }

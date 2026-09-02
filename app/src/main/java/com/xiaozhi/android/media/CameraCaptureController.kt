@@ -13,17 +13,19 @@ import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.media.ImageReader
-import android.util.Log
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
 import android.view.Surface
-import com.xiaozhi.android.core.ImageCodecs
+import com.xiaozhi.android.core.YuvFrameCodec
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
-class CameraCaptureController(private val context: Context) {
+class CameraCaptureController(
+    private val context: Context,
+    private val preferredFacing: Int = CameraCharacteristics.LENS_FACING_BACK
+) {
 
     @SuppressLint("MissingPermission")
     fun capture(): ByteArray? {
@@ -46,7 +48,14 @@ class CameraCaptureController(private val context: Context) {
         return try {
             thread = HandlerThread("xiaozhi-camera").also { it.start() }
             val handler = Handler(thread.looper)
-            reader = ImageReader.newInstance(size.first, size.second, android.graphics.ImageFormat.JPEG, 2)
+            // 部分设备（尤其模拟器虚拟相机）对 JPEG 输出流支持不完整，
+            // 统一用 YUV_420_888 取帧再软件压缩为 JPEG
+            reader = ImageReader.newInstance(
+                size.first,
+                size.second,
+                android.graphics.ImageFormat.YUV_420_888,
+                2
+            )
             val opened = CountDownLatch(1)
             manager.openCamera(
                 cameraId,
@@ -117,18 +126,13 @@ class CameraCaptureController(private val context: Context) {
             }
             val image = reader.acquireLatestImage() ?: return null
             image.use { capturedImage ->
-                val buffer = capturedImage.planes.first().buffer
-                buffer.rewind()
-                val bytes = ByteArray(buffer.remaining())
-                for (index in bytes.indices) {
-                    bytes[index] = buffer.get()
-                }
-                if (!ImageCodecs.looksLikeJpeg(bytes)) {
-                    Log.w(TAG, "Camera returned invalid JPEG, bytes=${bytes.size}")
-                    null
-                } else {
-                    rotateIfNeeded(bytes, sensorOrientation)
-                }
+                val nv21 = YuvFrameCodec.imageToNv21(capturedImage)
+                YuvFrameCodec.compressToJpeg(
+                    nv21,
+                    capturedImage.width,
+                    capturedImage.height,
+                    JPEG_QUALITY
+                )?.let { rotateIfNeeded(it, sensorOrientation) }
             }
         } catch (_: Exception) {
             null
@@ -143,16 +147,17 @@ class CameraCaptureController(private val context: Context) {
     }
 
     private fun selectCamera(manager: CameraManager): String? {
+        // 优先使用指定朝向的摄像头，找不到时回退到任意可用摄像头
         return manager.cameraIdList.firstOrNull { id ->
             manager.getCameraCharacteristics(id)
-                .get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
+                .get(CameraCharacteristics.LENS_FACING) == preferredFacing
         } ?: manager.cameraIdList.firstOrNull()
     }
 
     private fun selectSize(characteristics: CameraCharacteristics): Pair<Int, Int> {
         val sizes = characteristics.get(
             CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP
-        )?.getOutputSizes(android.graphics.ImageFormat.JPEG).orEmpty()
+        )?.getOutputSizes(android.graphics.ImageFormat.YUV_420_888).orEmpty()
         val target = sizes.firstOrNull { size ->
             maxOf(size.width, size.height) <= MAX_DIMENSION &&
                 maxOf(size.width, size.height) >= PREFERRED_DIMENSION
@@ -181,7 +186,6 @@ class CameraCaptureController(private val context: Context) {
     }
 
     private companion object {
-        private const val TAG = "CameraCapture"
         private const val JPEG_QUALITY = 85
         private const val MAX_DIMENSION = 1920
         private const val PREFERRED_DIMENSION = 1280

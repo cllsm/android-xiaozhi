@@ -90,6 +90,10 @@ object VisionService {
     }
 
     private fun parseResponse(text: String): JSONObject {
+        // 服务端返回 HTML（多为网关/代理错误页）时不应视为识别成功
+        if (text.trimStart().startsWith("<")) {
+            return failure("视觉服务返回了异常内容，请稍后再试")
+        }
         return try {
             JSONObject(text)
         } catch (_: Exception) {

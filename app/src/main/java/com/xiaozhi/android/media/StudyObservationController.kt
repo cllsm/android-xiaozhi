@@ -21,8 +21,9 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import android.util.Size
-import com.xiaozhi.android.core.ImageCodecs
+import com.xiaozhi.android.core.YuvFrameCodec
 import com.xiaozhi.android.study.StudyCameraFacing
+import com.xiaozhi.android.study.StudySessionState
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -95,7 +96,7 @@ class StudyObservationController(
             val imageReader = ImageReader.newInstance(
                 size.first,
                 size.second,
-                android.graphics.ImageFormat.JPEG,
+                android.graphics.ImageFormat.YUV_420_888,
                 MAX_IMAGES
             )
             val opened = CountDownLatch(1)
@@ -364,20 +365,16 @@ class StudyObservationController(
             if (!captured.await(CAPTURE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) return null
             val image = imageReader.acquireLatestImage() ?: return null
             image.use { capturedImage ->
-                val buffer = capturedImage.planes.first().buffer
-                buffer.rewind()
-                val bytes = ByteArray(buffer.remaining())
-                for (index in bytes.indices) {
-                    bytes[index] = buffer.get()
-                }
-                if (!ImageCodecs.looksLikeJpeg(bytes)) {
-                    Log.w(
-                        TAG,
-                        "Study camera returned invalid JPEG, bytes=${bytes.size}"
-                    )
-                    null
-                } else {
-                    rotateIfNeeded(bytes, sensorOrientation)
+                val nv21 = YuvFrameCodec.imageToNv21(capturedImage)
+                YuvFrameCodec.compressToJpeg(
+                    nv21,
+                    capturedImage.width,
+                    capturedImage.height,
+                    JPEG_QUALITY
+                )?.let { jpeg ->
+                    // 传感器方向叠加用户手动校正，保持识别图与预览方向一致
+                    val manualOffset = StudySessionState.state.value.previewRotationOffset
+                    rotateIfNeeded(jpeg, sensorOrientation + manualOffset)
                 }
             }
         } catch (_: Exception) {
@@ -421,7 +418,7 @@ class StudyObservationController(
     private fun selectSize(characteristics: CameraCharacteristics): Pair<Int, Int> {
         val sizes = characteristics.get(
             CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP
-        )?.getOutputSizes(android.graphics.ImageFormat.JPEG).orEmpty()
+        )?.getOutputSizes(android.graphics.ImageFormat.YUV_420_888).orEmpty()
         val target = sizes.firstOrNull { size ->
             maxOf(size.width, size.height) <= MAX_DIMENSION &&
                 maxOf(size.width, size.height) >= PREFERRED_DIMENSION
@@ -470,9 +467,11 @@ class StudyObservationController(
     }
 
     private fun rotateIfNeeded(bytes: ByteArray, orientationDegrees: Int): ByteArray {
-        if (orientationDegrees == 0) return bytes
+        // 归一化角度（如 270 + 90 = 360 应视为 0）
+        val normalized = ((orientationDegrees % 360) + 360) % 360
+        if (normalized == 0) return bytes
         val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return bytes
-        val matrix = Matrix().apply { postRotate(orientationDegrees.toFloat()) }
+        val matrix = Matrix().apply { postRotate(normalized.toFloat()) }
         val rotated = Bitmap.createBitmap(
             bitmap,
             0,

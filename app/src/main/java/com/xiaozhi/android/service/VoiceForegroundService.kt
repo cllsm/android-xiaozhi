@@ -542,6 +542,7 @@ class VoiceForegroundService : LifecycleService() {
             } else {
                 LISTENING_MODE_AUTO
             }
+            lastListeningMode.set(listeningMode)
             socket.sendStartListening(listeningMode)
             audioInput?.startSending()
             VoiceSessionState.update(
@@ -615,6 +616,10 @@ class VoiceForegroundService : LifecycleService() {
 
         val mcpToolResultHandler: (Any?, Boolean, String) -> Unit =
             { result, isError, toolName ->
+                // 语音路径的截屏/拍照识别结果也进缓存，之后“朗读图片结果”可读到
+                if (!isError && toolName in VISION_RESULT_TOOLS) {
+                    result?.toString()?.takeIf { it.isNotBlank() }?.let(VisionResultStore::update)
+                }
                 scheduleMcpSpeechFallback(result, isError, toolName)
         }
         activeMcpToolResultHandler.set(mcpToolResultHandler)
@@ -878,6 +883,8 @@ class VoiceForegroundService : LifecycleService() {
                             val studyState = StudySessionState.state.value
                             if (studyState.mode != StudyMode.None) {
                                 StudyObservationEngine.requestSpeechFrame()
+                                // 孩子开口即互动：刷新陪学闲置计时基准
+                                StudySessionManager.noteVoiceActivity()
                             }
                             if (studyState.mode == StudyMode.Reading) {
                                 val evaluation = StudySessionManager.evaluateTranscript(text)
@@ -1129,6 +1136,9 @@ class VoiceForegroundService : LifecycleService() {
     private fun drainPendingTexts(socket: XiaozhiWebSocketClient) {
         while (true) {
             val text = pendingTexts.poll() ?: break
+            // 刚建立的连接可能尚未进入聆听状态（如等待唤醒词），detect 文本会被服务端丢弃；
+            // 补发前先重新进入聆听
+            socket.sendStartListening(lastListeningMode.get())
             if (!socket.sendText(text)) {
                 VoiceSessionState.update(
                     status = ConnectionStatus.Error,
@@ -1362,6 +1372,8 @@ class VoiceForegroundService : LifecycleService() {
         private val activeService = AtomicReference<VoiceForegroundService?>(null)
         private val companionActive = AtomicBoolean(false)
         private val requestedWakeWordMode = AtomicReference<Boolean?>(null)
+        // 最近一次使用的聆听模式（AEC 开关决定），供文本发送前重进聆听状态使用
+        private val lastListeningMode = AtomicReference(LISTENING_MODE_AUTO)
         private val pendingTexts = ConcurrentLinkedQueue<String>()
         private val conversationCommands = ConcurrentLinkedQueue<String>()
         private val hiddenSpeechRequests = ConcurrentLinkedQueue<HiddenSpeechRequest>()
@@ -1398,6 +1410,9 @@ class VoiceForegroundService : LifecycleService() {
         private const val TAG = "VoiceForegroundService"
         private const val HIDDEN_SPEECH_MARKER = "朗读图片结果"
         private const val CLOUD_SPEECH_TOOL_NAME = "get_latest_vision_result"
+
+        // 结果需要进入 VisionResultStore 缓存的视觉类 MCP 工具
+        private val VISION_RESULT_TOOLS = setOf("take_screenshot", "take_photo")
         private const val HIDDEN_VISION_SPEECH_REQUEST = HIDDEN_SPEECH_MARKER
         private const val HIDDEN_SPEECH_TIMEOUT_MS = 30_000L
 
@@ -1503,11 +1518,17 @@ class VoiceForegroundService : LifecycleService() {
             return companionActive.get()
         }
 
-        fun sendText(text: String, callerContext: Context? = null): Boolean {
+        fun sendText(
+            text: String,
+            callerContext: Context? = null,
+            asSystem: Boolean = false
+        ): Boolean {
             val trimmed = text.trim()
             if (trimmed.isEmpty()) return false
 
-            if (AppLauncherTool.isLaunchRequest(trimmed)) {
+            // 系统内部消息（陪学巡查报告、节点播报指令等）：
+            // 跳过本地拦截与长文本替换，聊天记录由调用方自行记录，避免污染 UserTextStore
+            if (!asSystem && AppLauncherTool.isLaunchRequest(trimmed)) {
                 val service = activeService.get()
                 val launchContext = service?.applicationContext ?:
                     callerContext?.applicationContext ?:
@@ -1532,22 +1553,26 @@ class VoiceForegroundService : LifecycleService() {
                 }
             }
 
-            NativeMusicController.pendingSelectionIndex(trimmed)?.let { index ->
-                VoiceSessionState.appendChat(trimmed, fromUser = true)
-                activeService.get()?.let { service ->
-                    service.playMusicSelectionLocally(index)
-                    return true
-                }
-            }
-
-            activeService.get()?.let { service ->
-                MusicIntentParser.extractSongName(trimmed)?.let { songName ->
+            if (!asSystem) {
+                NativeMusicController.pendingSelectionIndex(trimmed)?.let { index ->
                     VoiceSessionState.appendChat(trimmed, fromUser = true)
-                    service.playMusicLocally(songName)
-                    return true
+                    activeService.get()?.let { service ->
+                        service.playMusicSelectionLocally(index)
+                        return true
+                    }
+                }
+
+                activeService.get()?.let { service ->
+                    MusicIntentParser.extractSongName(trimmed)?.let { songName ->
+                        VoiceSessionState.appendChat(trimmed, fromUser = true)
+                        service.playMusicLocally(songName)
+                        return true
+                    }
                 }
             }
 
+            // 服务端会拒收长文本（Detect is only for wake words, do not send long texts），
+            // 因此长文本（含系统内部消息）统一存入本地、经 MCP 工具 get_latest_user_text 送达
             val isLongText = trimmed.length > DIRECT_TEXT_MAX_CHARS
             val outboundText = if (isLongText) {
                 UserTextStore.update(trimmed)
@@ -1558,8 +1583,13 @@ class VoiceForegroundService : LifecycleService() {
             }
 
             activeWebSocket.get()?.let { socket ->
+                // 服务端的聆听会话存在空闲超时，超时后 detect 文本会被直接丢弃；
+                // 发送前重新进入聆听状态，确保消息一定被处理
+                socket.sendStartListening(lastListeningMode.get())
                 if (socket.sendText(outboundText)) {
-                    VoiceSessionState.appendChat(trimmed, fromUser = true)
+                    if (!asSystem) {
+                        VoiceSessionState.appendChat(trimmed, fromUser = true)
+                    }
                     if (isLongText) {
                         Log.i(
                             TAG,
@@ -1573,7 +1603,9 @@ class VoiceForegroundService : LifecycleService() {
 
             if (companionActive.get()) {
                 pendingTexts.add(outboundText)
-                VoiceSessionState.appendChat(trimmed, fromUser = true)
+                if (!asSystem) {
+                    VoiceSessionState.appendChat(trimmed, fromUser = true)
+                }
                 VoiceSessionState.update(
                     status = VoiceSessionState.state.value.status,
                     statusText = "文本已发送"
@@ -1590,7 +1622,9 @@ class VoiceForegroundService : LifecycleService() {
                 context.startForegroundService(
                     Intent(context, VoiceForegroundService::class.java)
                 )
-                VoiceSessionState.appendChat(trimmed, fromUser = true)
+                if (!asSystem) {
+                    VoiceSessionState.appendChat(trimmed, fromUser = true)
+                }
                 return true
             }
 

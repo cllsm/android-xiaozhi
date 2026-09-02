@@ -36,6 +36,22 @@ class McpServerProtocolTest {
     }
 
     @Test
+    fun fallsBackToLocalProtocolVersionWhenUnsupported() = runBlocking {
+        val protocol = McpServerProtocol(emptyList())
+        val request = request(
+            method = "initialize",
+            params = JSONObject().put("protocolVersion", "1999-01-01")
+        )
+
+        val response = protocol.handle(request)!!
+
+        assertEquals(
+            McpServerProtocol.PROTOCOL_VERSION,
+            response.getJSONObject("result").getString("protocolVersion")
+        )
+    }
+
+    @Test
     fun ignoresNotifications() = runBlocking {
         val response = McpServerProtocol(emptyList()).handle(
             JSONObject()
@@ -147,6 +163,16 @@ class McpServerProtocolTest {
     fun rejectsUnknownToolAsJsonRpcError() = runBlocking {
         val response = McpServerProtocol(emptyList()).handle(
             request("tools/call", JSONObject().put("name", "missing"))
+        )!!
+
+        assertEquals(-32602, response.getJSONObject("error").getInt("code"))
+    }
+
+    @Test
+    fun rejectsUnknownCursorAsInvalidParams() = runBlocking {
+        val protocol = McpServerProtocol(tools = listOf(tool("one", "第一")))
+        val response = protocol.handle(
+            request("tools/list", JSONObject().put("cursor", "missing"))
         )!!
 
         assertEquals(-32602, response.getJSONObject("error").getInt("code"))

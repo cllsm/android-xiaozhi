@@ -1,12 +1,12 @@
 package com.xiaozhi.android.mcp
 
-import org.json.JSONArray
 import org.json.JSONObject
 
+/** 实时天气工具：经 open-meteo 查询指定城市的真实天气，默认北京 */
 class WeatherTool : McpTool {
     override val definition = McpToolDefinition(
-        name = "get_weather",
-        description = "Get current weather for a city. Defaults to Beijing.",
+        name = "get_current_weather",
+        description = "Get real-time weather for a city. Defaults to Beijing.",
         properties = JSONObject().put(
             "city",
             JSONObject().put("type", "string")
@@ -15,13 +15,15 @@ class WeatherTool : McpTool {
 
     override fun call(arguments: JSONObject): Any? {
         val city = arguments.optString("city").ifBlank { DEFAULT_CITY }
-        return JSONObject()
-            .put("city", city)
-            .put("temperature", 25)
-            .put("condition", "晴朗")
-            .put("humidity", 45)
-            .put("wind", "东北风 3级")
-            .put("aqi", 52)
+        val place = OpenMeteoWeatherClient.lookupCity(city)
+            ?: return failure("暂时查不到“$city”的天气，请稍后再试或换个城市名")
+        val weather = OpenMeteoWeatherClient.loadCurrentWeather(place)
+            ?: return failure("天气服务暂时不可用，请稍后再试")
+        return weather.put("city", place.name)
+    }
+
+    private fun failure(message: String): JSONObject {
+        return JSONObject().put("success", false).put("message", message)
     }
 
     private companion object {
@@ -29,10 +31,11 @@ class WeatherTool : McpTool {
     }
 }
 
+/** 逐日预报工具：经 open-meteo 查询未来 1-7 天的真实预报，默认北京 */
 class ForecastTool : McpTool {
     override val definition = McpToolDefinition(
         name = "get_forecast",
-        description = "Get a 1-7 day weather forecast for a city.",
+        description = "Get a real 1-7 day weather forecast for a city.",
         properties = JSONObject()
             .put(
                 "city",
@@ -49,17 +52,17 @@ class ForecastTool : McpTool {
 
     override fun call(arguments: JSONObject): Any? {
         val city = arguments.optString("city").ifBlank { "北京" }
-        val days = arguments.optInt("days", 3).coerceIn(1, forecast.size)
+        val days = arguments.optInt("days", 3).coerceIn(1, 7)
+        val place = OpenMeteoWeatherClient.lookupCity(city)
+            ?: return failure("暂时查不到“$city”的天气，请稍后再试或换个城市名")
+        val forecast = OpenMeteoWeatherClient.loadForecast(place, days)
+            ?: return failure("天气服务暂时不可用，请稍后再试")
         return JSONObject()
-            .put("city", city)
-            .put("forecast", JSONArray(forecast.take(days)))
+            .put("city", place.name)
+            .put("forecast", forecast)
     }
 
-    private companion object {
-        private val forecast = listOf(
-            JSONObject().put("date", "今天").put("high", 28).put("low", 18).put("condition", "晴"),
-            JSONObject().put("date", "明天").put("high", 26).put("low", 17).put("condition", "多云"),
-            JSONObject().put("date", "后天").put("high", 24).put("low", 15).put("condition", "小雨")
-        )
+    private fun failure(message: String): JSONObject {
+        return JSONObject().put("success", false).put("message", message)
     }
 }

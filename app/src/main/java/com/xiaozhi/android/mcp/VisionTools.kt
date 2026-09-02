@@ -4,6 +4,7 @@ import android.content.Context
 import com.xiaozhi.android.media.CameraCaptureController
 import com.xiaozhi.android.media.ScreenCaptureController
 import com.xiaozhi.android.service.MediaProjectionForegroundService
+import com.xiaozhi.android.study.StudyObservationEngine
 import org.json.JSONObject
 
 class LatestVisionResultTool : McpTool {
@@ -48,8 +49,12 @@ class ScreenshotTool(private val context: Context) : McpTool {
         var image = ScreenCaptureController.capture(context)
         if (image == null && ScreenCaptureController.hasPermission()) {
             MediaProjectionForegroundService.start(context)
-            Thread.sleep(PROJECTION_READY_WAIT_MS)
-            image = ScreenCaptureController.capture(context)
+            // 轮询等待投影前台服务就绪，成功即停，避免固定长睡眠占用请求线程
+            for (attempt in 0 until PROJECTION_READY_ATTEMPTS) {
+                Thread.sleep(PROJECTION_READY_WAIT_MS)
+                image = ScreenCaptureController.capture(context)
+                if (image != null) break
+            }
         }
         image ?: return failure("截屏不可用，请先在首页重新授予屏幕识别权限")
         return VisionService.analyze(
@@ -64,7 +69,8 @@ class ScreenshotTool(private val context: Context) : McpTool {
     }
 
     private companion object {
-        private const val PROJECTION_READY_WAIT_MS = 600L
+        private const val PROJECTION_READY_WAIT_MS = 200L
+        private const val PROJECTION_READY_ATTEMPTS = 4
     }
 }
 
@@ -81,8 +87,12 @@ class CameraTool(private val context: Context) : McpTool {
 
     override fun call(arguments: JSONObject): Any? {
         val question = arguments.optString("question").ifBlank { "描述照片内容" }
-        val image = CameraCaptureController(context).capture()
-            ?: return failure("拍照不可用，请授予相机权限")
+        // 陪学固定机位观察运行时复用其相机会话取帧，避免重开相机把观察会话挤下线
+        val image = if (StudyObservationEngine.isRunning) {
+            StudyObservationEngine.captureFrame()
+        } else {
+            CameraCaptureController(context).capture()
+        } ?: return failure("拍照不可用，请授予相机权限")
         return VisionService.analyze(
             ScreenVisionPromptBuilder.buildCameraPrompt(question),
             image,

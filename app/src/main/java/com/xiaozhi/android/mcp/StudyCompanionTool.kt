@@ -27,7 +27,10 @@ class StudyCompanionCheckTool : McpTool {
     override fun call(arguments: JSONObject): Any? {
         val question = arguments.optString("question")
         val frame = StudyCompanionController.captureCurrentFrame()
-            ?: return failure("陪学预览未开启，请先在首页打开陪学模式")
+            ?: return failure(
+                "陪学巡查需要前置预览画面，请先在首页打开陪学模式并保持预览开启，" +
+                    "之后可以再问我一次"
+            )
         return VisionService.analyze(
             StudyCompanionPromptBuilder.build(question),
             frame,

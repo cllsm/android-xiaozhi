@@ -32,7 +32,7 @@ class McpServerProtocol(
         return when (method) {
             METHOD_INITIALIZE -> resultResponse(id, initializeResult(params))
             METHOD_PING -> resultResponse(id, JSONObject())
-            METHOD_TOOLS_LIST -> resultResponse(id, toolsPage(params))
+            METHOD_TOOLS_LIST -> toolsListResponse(id, params)
             METHOD_TOOLS_CALL -> callTool(id, params)
             else -> errorResponse(
                 id = id,
@@ -45,9 +45,10 @@ class McpServerProtocol(
     private fun initializeResult(params: JSONObject): JSONObject {
         val capabilities = params.optJSONObject("capabilities") ?: JSONObject()
         onInitialize(capabilities)
-        val protocolVersion = params.optString("protocolVersion")
-            .takeIf { it.isNotBlank() }
-            ?: PROTOCOL_VERSION
+        // 仅回显受支持的协议版本；未知或缺失版本按 MCP 规范回退到本地版本
+        val requested = params.optString("protocolVersion")
+        val protocolVersion =
+            if (requested in SUPPORTED_PROTOCOL_VERSIONS) requested else PROTOCOL_VERSION
         return JSONObject()
             .put("protocolVersion", protocolVersion)
             .put("capabilities", JSONObject().put("tools", JSONObject()))
@@ -57,6 +58,15 @@ class McpServerProtocol(
                     .put("name", SERVER_NAME)
                     .put("version", SERVER_VERSION)
             )
+    }
+
+    private fun toolsListResponse(id: Any, params: JSONObject): JSONObject {
+        // 无效游标按 MCP 规范返回参数错误，避免服务端把空列表误判为“设备无工具”
+        val cursor = params.optString("cursor")
+        if (cursor.isNotBlank() && tools.none { it.definition.name == cursor }) {
+            return errorResponse(id, INVALID_PARAMS, "Unknown cursor: $cursor")
+        }
+        return resultResponse(id, toolsPage(params))
     }
 
     private fun toolsPage(params: JSONObject): JSONObject {
@@ -136,6 +146,10 @@ class McpServerProtocol(
     companion object {
         const val JSONRPC_VERSION = "2.0"
         const val PROTOCOL_VERSION = "2024-11-05"
+
+        // 本实现兼容的 MCP 协议版本；initialize 只回显其中的版本，其余回退到 PROTOCOL_VERSION
+        val SUPPORTED_PROTOCOL_VERSIONS =
+            setOf("2024-11-05", "2025-03-26", "2025-06-18")
 
         fun resultResponse(id: Any, result: Any?): JSONObject {
             return JSONObject()

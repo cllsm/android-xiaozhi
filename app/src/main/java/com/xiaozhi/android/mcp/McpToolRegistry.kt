@@ -19,10 +19,12 @@ object McpToolRegistry {
             add(CameraTool(context))
             add(StudyStartTool())
             add(StudyStatusTool())
+            add(StudyCompanionCheckTool())
             add(HomeworkCapturePageTool())
             add(HomeworkGetContextTool())
             add(ReadingCapturePageTool())
             add(ReadingGetContextTool())
+            add(WeatherTool())
             add(ForecastTool())
             if (settings.musicEnabled) {
                 NativeMusicController.configure(settings)
@@ -36,8 +38,6 @@ object McpToolRegistry {
                 add(MusicLyricsTool())
                 add(LocalPlaylistTool(context))
             }
-        }.filterNot { it.definition.name in CLOUD_NATIVE_TOOL_NAMES }
+        }
     }
-
-    private val CLOUD_NATIVE_TOOL_NAMES = setOf("get_weather")
 }

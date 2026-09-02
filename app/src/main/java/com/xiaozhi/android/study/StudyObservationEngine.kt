@@ -7,6 +7,7 @@ import com.xiaozhi.android.media.StudyPreviewInfo
 import com.xiaozhi.android.media.StudyObservationController
 import com.xiaozhi.android.study.StudyCameraFacing
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -23,6 +24,9 @@ object StudyObservationEngine {
     private val processing = AtomicBoolean(false)
     private val frameCaptureBusy = AtomicBoolean(false)
     private val speechRequested = AtomicBoolean(false)
+    // 观察轮询循环是否已退出；切换摄像头前等待其真正退出，避免旧循环使用已关闭的控制器
+    private val loopIdle = AtomicBoolean(true)
+    private val loopGeneration = AtomicInteger(0)
     private var controller: StudyObservationController? = null
 
     val isRunning: Boolean get() = running.get()
@@ -30,7 +34,9 @@ object StudyObservationEngine {
     fun start(context: Context, preferredFacing: StudyCameraFacing = StudyCameraFacing.Back) {
         if (running.get() || !starting.compareAndSet(false, true)) return
 
+        val generation = loopGeneration.incrementAndGet()
         scope.launch {
+            loopIdle.set(false)
             try {
                 val newController = StudyObservationController(
                     context.applicationContext,
@@ -105,6 +111,10 @@ object StudyObservationEngine {
                 }
             } finally {
                 starting.set(false)
+                // 仅当自己仍是最新一代循环时才标记空闲，避免旧循环退出覆盖新循环的状态
+                if (loopGeneration.get() == generation) {
+                    loopIdle.set(true)
+                }
             }
         }
     }
@@ -127,10 +137,12 @@ object StudyObservationEngine {
         controller = null
         scope.launch {
             withContext(Dispatchers.IO) { activeController?.close() }
-            // The active observation coroutine may still be unwinding. Wait for
-            // its startup guard before attempting the replacement camera.
+            // 旧观察协程可能正在收尾（如视觉分析未结束），
+            // 等待其轮询循环真正退出后再启动替换相机，避免旧循环误用已关闭的控制器
             var attempts = 0
-            while (starting.get() && attempts < SWITCH_START_TIMEOUT_MS / SWITCH_POLL_MS) {
+            while ((!loopIdle.get() || starting.get()) &&
+                attempts < SWITCH_START_TIMEOUT_MS / SWITCH_POLL_MS
+            ) {
                 delay(SWITCH_POLL_MS)
                 attempts++
             }
