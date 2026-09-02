@@ -71,10 +71,16 @@ import java.util.concurrent.ConcurrentLinkedQueue
 
 class VoiceForegroundService : LifecycleService() {
 
+    private data class HiddenSpeechRequest(
+        val requestText: String,
+        val expiresAt: Long
+    )
+
     private var wakeLock: PowerManager.WakeLock? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private val localTtsSpeaker by lazy { LocalTtsSpeaker(this) }
-    private val activeMcpToolResultHandler = AtomicReference<(Any?, Boolean) -> Unit>()
+    private val activeMcpToolResultHandler =
+        AtomicReference<(Any?, Boolean, String) -> Unit>()
     private val active = AtomicBoolean(false)
     private var connectionJob: kotlinx.coroutines.Job? = null
     private val recoveryRequests = Channel<RecoveryTrigger>(Channel.CONFLATED)
@@ -102,8 +108,8 @@ class VoiceForegroundService : LifecycleService() {
             context = this,
             scope = lifecycleScope,
             settingsRepository = settingsRepository
-        ) { result, isError ->
-            activeMcpToolResultHandler.get()?.invoke(result, isError)
+        ) { result, isError, toolName ->
+            activeMcpToolResultHandler.get()?.invoke(result, isError, toolName)
         }
     }
 
@@ -185,6 +191,8 @@ class VoiceForegroundService : LifecycleService() {
         pendingTexts.clear()
         conversationCommands.clear()
         pendingWakeWords.clear()
+        hiddenSpeechRequests.clear()
+        activeHiddenSpeechRequest.set(null)
         connectionRequests.clear()
         connectionJob?.cancel()
         connectionJob = null
@@ -552,7 +560,15 @@ class VoiceForegroundService : LifecycleService() {
             }
         }
 
-        fun scheduleMcpSpeechFallback(result: Any?, isError: Boolean) {
+        fun scheduleMcpSpeechFallback(result: Any?, isError: Boolean, toolName: String) {
+            if (toolName == CLOUD_SPEECH_TOOL_NAME) {
+                Log.i(
+                    TAG,
+                    "Cloud-only MCP speech result, tool=$toolName, " +
+                        "isError=$isError"
+                )
+                return
+            }
             val speech = ToolReplySpeechFormatter.format(
                 if (isError) {
                     mapOf("success" to false, "message" to result.toString())
@@ -597,8 +613,9 @@ class VoiceForegroundService : LifecycleService() {
             mainHandler.postDelayed(runnable, MCP_TOOL_SPEECH_DELAY_MS)
         }
 
-        val mcpToolResultHandler: (Any?, Boolean) -> Unit = { result, isError ->
-            scheduleMcpSpeechFallback(result, isError)
+        val mcpToolResultHandler: (Any?, Boolean, String) -> Unit =
+            { result, isError, toolName ->
+                scheduleMcpSpeechFallback(result, isError, toolName)
         }
         activeMcpToolResultHandler.set(mcpToolResultHandler)
 
@@ -751,6 +768,7 @@ class VoiceForegroundService : LifecycleService() {
                     audioOutput?.start()
                     audioInput?.start()
                     drainPendingWakeWords(socket)
+                    drainHiddenSpeechRequests(socket)
                     drainPendingTexts(socket)
                     updateNotification(VoiceSessionState.state.value.statusText)
                     hello.complete(true)
@@ -783,7 +801,13 @@ class VoiceForegroundService : LifecycleService() {
                         if (text.isNotBlank()) {
                             cloudSpeechLastText.set(text)
                         }
-                        if (text.isNotBlank() && ttsState in FINAL_TEXT_STATES) {
+                        if (ttsState == "start" && activeHiddenSpeechRequest.get() == null) {
+                            claimHiddenSpeechRequest()
+                        }
+                        if (text.isNotBlank() &&
+                            ttsState in FINAL_TEXT_STATES &&
+                            !shouldSuppressAssistantChat()
+                        ) {
                             VoiceSessionState.appendChat(text, fromUser = false)
                         }
                         val stateText = when (ttsState) {
@@ -795,7 +819,6 @@ class VoiceForegroundService : LifecycleService() {
                         if (ttsState == "start") {
                             cloudSpeechAudioReceived.set(false)
                             cancelMcpSpeechFallback()
-                            cancelVisionSpeechFallbacks()
                         }
                         VoiceSessionState.update(
                             status = ConnectionStatus.Connected,
@@ -812,7 +835,10 @@ class VoiceForegroundService : LifecycleService() {
                         }
                         if (ttsState == "stop") {
                             val fallbackSpeech = cloudSpeechLastText.get().trim()
-                            if (!cloudSpeechAudioReceived.get() && fallbackSpeech.isNotBlank()) {
+                            if (!cloudSpeechAudioReceived.get() &&
+                                fallbackSpeech.isNotBlank() &&
+                                !shouldSuppressAssistantChat()
+                            ) {
                                 Log.w(
                                     TAG,
                                     "Cloud TTS ended without audio; local fallback, " +
@@ -825,6 +851,7 @@ class VoiceForegroundService : LifecycleService() {
                                     )
                                 }
                             }
+                            activeHiddenSpeechRequest.set(null)
                             cloudSpeechLastText.set("")
                             startContinuousListening("继续聆听")
                             VoiceSessionState.updateConversation(currentText = "")
@@ -843,6 +870,10 @@ class VoiceForegroundService : LifecycleService() {
                         }
                         VoiceSessionState.updateConversation(currentText = text)
                         if (text.isNotBlank() && (state.isBlank() || state == "final")) {
+                            val hiddenSpeechTrigger = isHiddenSpeechTrigger(text)
+                            if (hiddenSpeechTrigger) {
+                                claimHiddenSpeechRequest()
+                            }
                             val suppressUserTextEcho = UserTextStore.consumeEcho(text)
                             val studyState = StudySessionState.state.value
                             if (studyState.mode != StudyMode.None) {
@@ -872,7 +903,7 @@ class VoiceForegroundService : LifecycleService() {
                                 playMusicLocally(songName)
                                 return
                             }
-                            if (!suppressUserTextEcho) {
+                            if (!suppressUserTextEcho && !hiddenSpeechTrigger) {
                                 VoiceSessionState.appendChat(text, fromUser = true)
                             }
                         }
@@ -886,7 +917,6 @@ class VoiceForegroundService : LifecycleService() {
                     if (cloudSpeechActive.get()) {
                         cloudSpeechAudioReceived.set(true)
                         cancelMcpSpeechFallback()
-                        cancelVisionSpeechFallbacks()
                     }
                     audioOutput?.enqueue(audio)
                 }
@@ -894,7 +924,6 @@ class VoiceForegroundService : LifecycleService() {
                 override fun onClosed(code: Int, reason: String) {
                     stopAudio()
                     cancelMcpSpeechFallback()
-                    cancelVisionSpeechFallbacks()
                     activeMcpToolResultHandler.compareAndSet(mcpToolResultHandler, null)
                     if (active.get()) {
                         VoiceSessionState.update(
@@ -909,7 +938,6 @@ class VoiceForegroundService : LifecycleService() {
                 override fun onError(message: String) {
                     stopAudio()
                     cancelMcpSpeechFallback()
-                    cancelVisionSpeechFallbacks()
                     activeMcpToolResultHandler.compareAndSet(mcpToolResultHandler, null)
                     if (active.get()) {
                         VoiceSessionState.update(
@@ -1037,7 +1065,6 @@ class VoiceForegroundService : LifecycleService() {
             socket.close()
             clearActiveSocket(socket)
             cancelMcpSpeechFallback()
-            cancelVisionSpeechFallbacks()
             activeMcpToolResultHandler.compareAndSet(mcpToolResultHandler, null)
         }
         return false
@@ -1109,6 +1136,19 @@ class VoiceForegroundService : LifecycleService() {
                 )
                 break
             }
+        }
+    }
+
+    private fun drainHiddenSpeechRequests(socket: XiaozhiWebSocketClient) {
+        val now = System.currentTimeMillis()
+        while (true) {
+            val request = hiddenSpeechRequests.peek() ?: break
+            if (request.expiresAt <= now) {
+                hiddenSpeechRequests.poll()
+                continue
+            }
+            if (!socket.sendText(request.requestText)) break
+            hiddenSpeechRequests.poll()
         }
     }
 
@@ -1263,6 +1303,29 @@ class VoiceForegroundService : LifecycleService() {
         }
     }
 
+    private fun claimHiddenSpeechRequest() {
+        val now = System.currentTimeMillis()
+        while (true) {
+            val request = hiddenSpeechRequests.peek() ?: break
+            if (request.expiresAt > now) {
+                activeHiddenSpeechRequest.set(request)
+                hiddenSpeechRequests.poll()
+                return
+            }
+            hiddenSpeechRequests.poll()
+        }
+    }
+
+    private fun isHiddenSpeechTrigger(text: String): Boolean {
+        return hiddenSpeechRequests.any { it.requestText.contains(HIDDEN_SPEECH_MARKER) } &&
+            text.contains(HIDDEN_SPEECH_MARKER)
+    }
+
+    private fun shouldSuppressAssistantChat(): Boolean {
+        val request = activeHiddenSpeechRequest.get() ?: return false
+        return request.expiresAt > System.currentTimeMillis()
+    }
+
     private fun speakLocalFunctionReply(text: String) {
         val speech = ToolReplySpeechFormatter.format(text) ?: return
         mainHandler.post {
@@ -1287,63 +1350,6 @@ class VoiceForegroundService : LifecycleService() {
         }
     }
 
-    private fun speakVisionResult(text: String) {
-        mainHandler.post {
-            NativeMusicController.pauseForVoiceInteraction()
-            VoiceSessionState.update(
-                status = VoiceSessionState.state.value.status,
-                statusText = "正在朗读识别内容",
-                deviceState = DeviceState.Speaking
-            )
-            updateNotification("正在朗读识别内容")
-            localTtsSpeaker.speak(text) { spoken ->
-                if (NativeMusicController.isPausedForVoiceInteraction()) {
-                    NativeMusicController.resumeAfterVoiceInteraction()
-                }
-                VoiceSessionState.update(
-                    status = VoiceSessionState.state.value.status,
-                    statusText = if (spoken) {
-                        "识别内容朗读完成"
-                    } else {
-                        "本机语音合成不可用"
-                    },
-                    deviceState = DeviceState.Idle
-                )
-                updateNotification(VoiceSessionState.state.value.statusText)
-            }
-        }
-    }
-
-    private fun speakLocalVisionFallback(text: String) {
-        mainHandler.post {
-            NativeMusicController.pauseForVoiceInteraction()
-            VoiceSessionState.update(
-                status = VoiceSessionState.state.value.status,
-                statusText = "正在朗读识别内容",
-                deviceState = DeviceState.Speaking
-            )
-            updateNotification("正在朗读识别内容")
-            localTtsSpeaker.speak(text) { spoken ->
-                if (spoken) {
-                    VoiceSessionState.appendChat(text, fromUser = false)
-                }
-                if (NativeMusicController.isPausedForVoiceInteraction()) {
-                    NativeMusicController.resumeAfterVoiceInteraction()
-                }
-                VoiceSessionState.update(
-                    status = VoiceSessionState.state.value.status,
-                    statusText = if (spoken) {
-                        "识别内容朗读完成"
-                    } else {
-                        "等待云端播报识别内容"
-                    },
-                    deviceState = DeviceState.Idle
-                )
-                updateNotification(VoiceSessionState.state.value.statusText)
-            }
-        }
-    }
-
     private enum class RecoveryTrigger {
         MANUAL,
         NETWORK,
@@ -1358,8 +1364,8 @@ class VoiceForegroundService : LifecycleService() {
         private val requestedWakeWordMode = AtomicReference<Boolean?>(null)
         private val pendingTexts = ConcurrentLinkedQueue<String>()
         private val conversationCommands = ConcurrentLinkedQueue<String>()
-        private val visionSpeechFallbacks = ConcurrentLinkedQueue<Runnable>()
-        private val visionSpeechGeneration = AtomicLong(0L)
+        private val hiddenSpeechRequests = ConcurrentLinkedQueue<HiddenSpeechRequest>()
+        private val activeHiddenSpeechRequest = AtomicReference<HiddenSpeechRequest?>(null)
         private const val CHANNEL_ID = "xiaozhi_voice"
         private const val NOTIFICATION_ID = 1001
         private const val WAKE_LOCK_TAG = "xiaozhi:voice"
@@ -1386,11 +1392,14 @@ class VoiceForegroundService : LifecycleService() {
         private const val WAKE_MODE_POLL_MS = 200L
         private const val RECONNECT_POLL_MS = 200L
         private const val MCP_TOOL_SPEECH_DELAY_MS = 3_000L
-        private const val VISION_TTS_FALLBACK_DELAY_MS = 1_500L
         private const val LISTENING_MODE_AUTO = "auto"
         private const val LISTENING_MODE_REALTIME = "realtime"
         private val FINAL_TEXT_STATES = setOf("stop", "sentence_end")
         private const val TAG = "VoiceForegroundService"
+        private const val HIDDEN_SPEECH_MARKER = "朗读图片结果"
+        private const val CLOUD_SPEECH_TOOL_NAME = "get_latest_vision_result"
+        private const val HIDDEN_VISION_SPEECH_REQUEST = HIDDEN_SPEECH_MARKER
+        private const val HIDDEN_SPEECH_TIMEOUT_MS = 30_000L
 
         fun start(context: Context) {
             context.startForegroundService(Intent(context, VoiceForegroundService::class.java))
@@ -1462,48 +1471,32 @@ class VoiceForegroundService : LifecycleService() {
             return activeWebSocket.get()?.sendAbortSpeaking() ?: false
         }
 
-        fun requestCloudSpeech(text: String): Boolean {
+        fun requestVisionSpeech(text: String): Boolean {
             val speech = ToolReplySpeechFormatter.formatForReading(text) ?: return false
             VisionResultStore.update(text)
-            VisionResultStore.markPendingSpeech()
 
-            val service = activeService.get()
+            val request = HiddenSpeechRequest(
+                requestText = HIDDEN_VISION_SPEECH_REQUEST,
+                expiresAt = System.currentTimeMillis() + HIDDEN_SPEECH_TIMEOUT_MS
+            )
+            hiddenSpeechRequests.add(request)
+
             val socket = activeWebSocket.get()
-            if (socket != null) {
-                socket.sendAbortSpeaking()
-                val delivered = socket.sendVisionSpeechRequest()
-                if (delivered) {
-                    service?.let { scheduleVisionSpeechFallback(it, speech) }
-                    Log.i(TAG, "Vision speech request delivered=true, resultLength=${speech.length}")
-                    return true
-                }
+            val delivered = socket?.sendText(request.requestText) ?: false
+            if (!delivered) {
+                activeService.get()?.requestConnection()
             }
-            if (service != null) {
-                service.speakVisionResult(speech)
-                Log.i(TAG, "Local vision speech requested, length=${speech.length}, cloudAvailable=false")
-                return true
-            }
-            return false
-        }
-
-        private fun scheduleVisionSpeechFallback(service: VoiceForegroundService, speech: String) {
-            val generation = visionSpeechGeneration.incrementAndGet()
-            val runnable = Runnable {
-                if (generation != visionSpeechGeneration.get()) return@Runnable
-                Log.i(TAG, "Vision local speech fallback started, length=${speech.length}")
-                service.speakLocalVisionFallback(speech)
-            }
-            visionSpeechFallbacks.add(runnable)
-            service.mainHandler.postDelayed(runnable, VISION_TTS_FALLBACK_DELAY_MS)
-        }
-
-        private fun cancelVisionSpeechFallbacks() {
-            visionSpeechGeneration.incrementAndGet()
-            activeService.get()?.localTtsSpeaker?.stop()
-            while (true) {
-                val runnable = visionSpeechFallbacks.poll() ?: break
-                activeService.get()?.mainHandler?.removeCallbacks(runnable)
-            }
+            VoiceSessionState.update(
+                status = VoiceSessionState.state.value.status,
+                statusText = "正在请求云端播报识别内容",
+                deviceState = DeviceState.Speaking
+            )
+            Log.i(
+                TAG,
+                "Vision MCP speech requested, resultLength=${speech.length}, " +
+                    "delivered=$delivered"
+            )
+            return true
         }
 
         fun isRunning(): Boolean {

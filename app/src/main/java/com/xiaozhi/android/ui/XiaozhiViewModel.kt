@@ -825,6 +825,6 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun requestVisionSpeech(text: String) {
-        VoiceForegroundService.requestCloudSpeech(text)
+        VoiceForegroundService.requestVisionSpeech(text)
     }
 }

@@ -9,17 +9,21 @@ import org.json.JSONObject
 class LatestVisionResultTool : McpTool {
     override val definition = McpToolDefinition(
         name = "get_latest_vision_result",
-        description = "Read the latest cached vision result without recapturing. Use this when the user asks to read the screen recognition result."
+        description = "Read the latest cached screen, camera, gallery, or study vision result without recapturing. Use it when the user says 朗读图片结果, then speak the message field verbatim.",
+        resultTextLimitBytes = MAX_RESULT_TEXT_BYTES
     )
 
     override fun call(arguments: JSONObject): Any? {
-        VisionResultStore.consumePendingSpeech()
         val result = VisionResultStore.latest()
             ?: "还没有可朗读的识别结果，请先完成一次屏幕或图片识别"
         return JSONObject()
             .put("success", true)
             .put("message", result)
             .put("result", result)
+    }
+
+    private companion object {
+        private const val MAX_RESULT_TEXT_BYTES = 32_768
     }
 }
 
@@ -40,14 +44,6 @@ class ScreenshotTool(private val context: Context) : McpTool {
     )
 
     override fun call(arguments: JSONObject): Any? {
-        if (VisionResultStore.consumePendingSpeech()) {
-            VisionResultStore.latest()?.let { result ->
-                return JSONObject()
-                    .put("success", true)
-                    .put("message", result)
-                    .put("result", result)
-            }
-        }
         val question = arguments.optString("question").ifBlank { "描述当前屏幕内容" }
         var image = ScreenCaptureController.capture(context)
         if (image == null && ScreenCaptureController.hasPermission()) {

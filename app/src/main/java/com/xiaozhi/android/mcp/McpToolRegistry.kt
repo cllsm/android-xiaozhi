@@ -8,12 +8,12 @@ object McpToolRegistry {
     fun create(context: Context, settings: SettingsState): List<McpTool> {
         val volumeTool = VolumeTool(context)
         return buildList {
+            add(LatestVisionResultTool())
             add(volumeTool)
             add(GetVolumeTool(volumeTool))
             add(VolumeStatusTool(volumeTool))
             add(AppLauncherTool(context))
             add(InstalledAppsTool(context))
-            add(LatestVisionResultTool())
             add(LatestUserTextTool())
             add(ScreenshotTool(context))
             add(CameraTool(context))

@@ -17,7 +17,11 @@ class McpServerProtocol(
     private val toolsPageSizeBytes: Int = DEFAULT_TOOLS_PAGE_SIZE_BYTES,
     private val toolDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val onInitialize: (capabilities: JSONObject) -> Unit = {},
-    private val onToolResult: (result: Any?, isError: Boolean) -> Unit = { _, _ -> }
+    private val onToolResult: (
+        result: Any?,
+        isError: Boolean,
+        toolName: String
+    ) -> Unit = { _, _, _ -> }
 ) {
     suspend fun handle(payload: JSONObject): JSONObject? {
         if (payload.optString("jsonrpc") != JSONRPC_VERSION) return null
@@ -107,7 +111,7 @@ class McpServerProtocol(
         return when {
             result == null -> {
                 val message = "Tool timed out after ${toolTimeoutMillis}ms"
-                onToolResult(message, true)
+                onToolResult(message, true, name)
                 resultResponse(id, errorToolCallResult(message))
             }
             result.isFailure -> {
@@ -115,12 +119,12 @@ class McpServerProtocol(
                     ?.message
                     ?.takeIf { it.isNotBlank() }
                     ?: "Tool execution failed"
-                onToolResult(message, true)
+                onToolResult(message, true, name)
                 resultResponse(id, errorToolCallResult(message))
             }
             else -> {
                 val rawResult = result.getOrThrow()
-                onToolResult(rawResult, false)
+                onToolResult(rawResult, false, name)
                 resultResponse(
                     id,
                     toolCallResult(rawResult, tool.definition.resultTextLimitBytes)

@@ -25,7 +25,11 @@ class McpEndpointManager(
     context: Context,
     scope: CoroutineScope,
     private val settingsRepository: SettingsRepository,
-    private val onToolResult: (result: Any?, isError: Boolean) -> Unit
+    private val onToolResult: (
+        result: Any?,
+        isError: Boolean,
+        toolName: String
+    ) -> Unit
 ) {
     private val appContext = context.applicationContext
     private val managerScope = CoroutineScope(
@@ -102,7 +106,12 @@ class McpEndpointManager(
                         val bytes = message.toString().toByteArray(Charsets.UTF_8).size
                         val method = message.optString("method")
                         val id = message.opt("id")
-                        Log.i(TAG, "MCP request, method=$method, id=$id, bytes=$bytes")
+                        val toolName = message.optJSONObject("params")?.optString("name").orEmpty()
+                        Log.i(
+                            TAG,
+                            "MCP request, method=$method, id=$id, " +
+                                "tool=${if (toolName.isBlank()) "-" else toolName}, bytes=$bytes"
+                        )
                         requestScope.launch {
                             val startedAt = System.currentTimeMillis()
                             val response = runCatching { protocol.handle(message) }.getOrNull()
