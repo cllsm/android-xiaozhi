@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.xiaozhi.android.study.QuickCommand
+import com.xiaozhi.android.ui.theme.extendedColors
 
 /**
  * 陪学快捷指令芯片行：让孩子不用猜语音指令，点芯片即触发。
@@ -47,8 +48,9 @@ fun StudyQuickCommandRow(
                         if (darkStyle) {
                             Color.White.copy(alpha = if (enabled) 0.20f else 0.10f)
                         } else {
-                            MaterialTheme.colorScheme.primaryContainer.copy(
-                                alpha = if (enabled) 1f else 0.5f
+                            // 浅色页用中性柔和底,区别于"提交"类主色按钮
+                            MaterialTheme.extendedColors.chipNeutralContainer.copy(
+                                alpha = if (enabled) 1f else 0.55f
                             )
                         }
                     )
@@ -63,7 +65,7 @@ fun StudyQuickCommandRow(
                     color = if (darkStyle) {
                         Color.White
                     } else {
-                        MaterialTheme.colorScheme.onPrimaryContainer
+                        MaterialTheme.extendedColors.onChipNeutralContainer
                     },
                     maxLines = 1
                 )

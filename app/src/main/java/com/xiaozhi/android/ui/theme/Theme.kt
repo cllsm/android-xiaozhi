@@ -1,12 +1,17 @@
 package com.xiaozhi.android.ui.theme
 
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 
 private val DarkColors = darkColorScheme(
     primary = Color(0xFF74DCC9),
@@ -47,7 +52,7 @@ private val DarkColors = darkColorScheme(
     scrim = Color.Black
 )
 
-// Morning Mint: a calm study palette with warm accents for activity states.
+// 晨雾绿(Morning Mint):安静的学习氛围底色,暖橙作为活动状态的点缀色。
 private val LightColors = lightColorScheme(
     primary = Color(0xFF006B5F),
     onPrimary = Color.White,
@@ -62,7 +67,7 @@ private val LightColors = lightColorScheme(
     onTertiary = Color.White,
     tertiaryContainer = Color(0xFFD5EDAD),
     onTertiaryContainer = Color(0xFF172600),
-    background = Color(0xFFF5FAF7),
+    background = Color(0xFFF6FAF8),
     onBackground = Color(0xFF18231F),
     surface = Color.White,
     onSurface = Color(0xFF18231F),
@@ -72,10 +77,10 @@ private val LightColors = lightColorScheme(
     surfaceDim = Color(0xFFD6E9E1),
     surfaceBright = Color(0xFFFBFDFB),
     surfaceContainerLowest = Color(0xFFFFFFFF),
-    surfaceContainerLow = Color(0xFFF0F8F3),
-    surfaceContainer = Color(0xFFEAF3EE),
-    surfaceContainerHigh = Color(0xFFE4EFE9),
-    surfaceContainerHighest = Color(0xFFDEEAE4),
+    surfaceContainerLow = Color(0xFFF1F8F4),
+    surfaceContainer = Color(0xFFEBF4EF),
+    surfaceContainerHigh = Color(0xFFE5F0EA),
+    surfaceContainerHighest = Color(0xFFDFEAE4),
     inverseSurface = Color(0xFF2C3532),
     inverseOnSurface = Color(0xFFEFF6F2),
     outline = Color(0xFFA8BDB4),
@@ -87,17 +92,42 @@ private val LightColors = lightColorScheme(
     scrim = Color.Black
 )
 
+/**
+ * 统一圆角节奏:小元素轻收、卡片中圆、大面板大圆,
+ * 全 App 的 Button/Card/Chip 默认形状都从这里取值。
+ */
+val XiaozhiShapes = Shapes(
+    extraSmall = RoundedCornerShape(6.dp),
+    small = RoundedCornerShape(10.dp),
+    medium = RoundedCornerShape(14.dp),
+    large = RoundedCornerShape(18.dp),
+    extraLarge = RoundedCornerShape(26.dp)
+)
+
+/** 扩展语义色的 CompositionLocal(随深浅主题切换) */
+private val LocalExtendedColors = staticCompositionLocalOf { LightExtendedColors }
+
+/** 从 MaterialTheme 读取扩展语义色 */
+val MaterialTheme.extendedColors: ExtendedColors
+    @Composable
+    @ReadOnlyComposable
+    get() = LocalExtendedColors.current
+
 @Composable
 fun XiaozhiTheme(
     darkTheme: Boolean = true,
     content: @Composable () -> Unit
 ) {
     val colors = if (darkTheme) DarkColors else LightColors
+    val extended = if (darkTheme) DarkExtendedColors else LightExtendedColors
     MaterialTheme(
-        colorScheme = colors
+        colorScheme = colors,
+        typography = XiaozhiTypography,
+        shapes = XiaozhiShapes
     ) {
         CompositionLocalProvider(
-            LocalContentColor provides colors.onBackground
+            LocalContentColor provides colors.onBackground,
+            LocalExtendedColors provides extended
         ) {
             content()
         }

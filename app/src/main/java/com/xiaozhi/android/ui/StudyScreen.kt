@@ -57,6 +57,7 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -83,6 +84,7 @@ import kotlinx.coroutines.flow.map
 import com.xiaozhi.android.core.ChatMessage
 import com.xiaozhi.android.core.DeviceState
 import com.xiaozhi.android.service.VoiceForegroundService
+import com.xiaozhi.android.ui.theme.extendedColors
 import com.xiaozhi.android.media.StudyPreviewInfo
 import com.xiaozhi.android.media.StudyPreviewOrientation
 import com.xiaozhi.android.study.StudyObservationEngine
@@ -386,7 +388,8 @@ internal fun StudyScreen(
                                 )
                             }
                             Spacer(modifier = Modifier.height(10.dp))
-                            Button(
+                            // 题内提示是次级动作,用低饱和的 tonal 层级避免全屏主按钮
+                            FilledTonalButton(
                                 onClick = { viewModel.requestHomeworkHint(item.index) },
                                 modifier = Modifier.fillMaxWidth()
                             ) { Text("给我一点提示") }
@@ -421,7 +424,7 @@ internal fun StudyScreen(
                             containerColor = if (selected) {
                                 MaterialTheme.colorScheme.primaryContainer
                             } else {
-                                MaterialTheme.colorScheme.surfaceVariant
+                                MaterialTheme.colorScheme.surfaceContainerLow
                             }
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -985,13 +988,13 @@ private fun StudyFullscreenPreview(
                 Icon(
                     imageVector = Icons.Filled.Star,
                     contentDescription = null,
-                    tint = Color(0xFFFFB300),
+                    tint = MaterialTheme.extendedColors.starGold,
                     modifier = Modifier.size(16.dp)
                 )
                 Text(
                     text = "${StudyRewardEngine.liveStars(state)}",
                     style = MaterialTheme.typography.labelMedium,
-                    color = Color.White
+                    color = MaterialTheme.extendedColors.starGold
                 )
             }
             Spacer(modifier = Modifier.width(10.dp))
@@ -1123,7 +1126,7 @@ private fun LiveChatBubble(
                 style = MaterialTheme.typography.bodySmall,
                 color = Color.White,
                 modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(RoundedCornerShape(12.dp))
                     .background(
                         if (message.fromUser) {
                             Color.White.copy(alpha = if (emphasize) 0.30f else 0.18f)
@@ -1131,7 +1134,7 @@ private fun LiveChatBubble(
                             Color.White.copy(alpha = if (emphasize) 0.16f else 0.10f)
                         }
                     )
-                    .padding(horizontal = 10.dp, vertical = 7.dp)
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
             )
         }
     }
@@ -1153,16 +1156,21 @@ private fun currentDisplay(context: Context): Display? {
 @Composable
 private fun StudyPanel(
     containerColor: androidx.compose.ui.graphics.Color =
-        MaterialTheme.colorScheme.surfaceVariant,
+        MaterialTheme.colorScheme.surfaceContainerLow,
     content: @Composable () -> Unit
 ) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp)
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(16.dp))
             .background(containerColor)
-            .padding(14.dp),
+            .border(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.outlineVariant,
+                shape = RoundedCornerShape(16.dp)
+            )
+            .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(0.dp)
     ) {
         content()
@@ -1180,14 +1188,23 @@ private fun StudyEntry(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.surface)
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(12.dp),
+            .padding(14.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+        // 图标配主色圆托盘,让模式入口有明确的视觉重量
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primaryContainer),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+        }
         Column(modifier = Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.titleSmall)
             Text(
@@ -1243,13 +1260,13 @@ private fun StudySessionHeader(
                 Icon(
                     imageVector = Icons.Filled.Star,
                     contentDescription = "本次星星",
-                    tint = Color(0xFFFFB300),
+                    tint = MaterialTheme.extendedColors.starGold,
                     modifier = Modifier.size(20.dp)
                 )
                 Text(
                     text = "$liveStars",
                     style = MaterialTheme.typography.titleMedium,
-                    color = Color(0xFFFFB300)
+                    color = MaterialTheme.extendedColors.starGold
                 )
             }
             if (state.captureRunning) {
@@ -1299,12 +1316,21 @@ private fun StudyCameraSetupPanel(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Filled.Check,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(18.dp)
-                )
+                // 勾选清单用成功色小托盘,比裸图标更有"就绪"的仪式感
+                Box(
+                    modifier = Modifier
+                        .size(22.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.extendedColors.successContainer),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Check,
+                        contentDescription = null,
+                        tint = MaterialTheme.extendedColors.success,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
                 Text(text = tip, style = MaterialTheme.typography.bodyMedium)
             }
             Spacer(modifier = Modifier.height(8.dp))
@@ -1364,7 +1390,8 @@ private fun homeworkStateLabel(state: String): String {
 @Composable
 private fun homeworkStateColor(state: String): androidx.compose.ui.graphics.Color {
     return when (state) {
-        "correct", "corrected" -> MaterialTheme.colorScheme.primary
+        // 做对/订正属于"成功"语义,与主色区分开
+        "correct", "corrected" -> MaterialTheme.extendedColors.success
         "wrong", "unreadable" -> MaterialTheme.colorScheme.error
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
@@ -1381,7 +1408,7 @@ private fun readingStateLabel(state: String): String {
 @Composable
 private fun readingStateColor(state: String): androidx.compose.ui.graphics.Color {
     return when (state) {
-        "passed" -> MaterialTheme.colorScheme.primary
+        "passed" -> MaterialTheme.extendedColors.success
         "needs_retry" -> MaterialTheme.colorScheme.error
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }

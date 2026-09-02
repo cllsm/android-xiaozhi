@@ -1,6 +1,7 @@
 package com.xiaozhi.android.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -24,9 +25,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import com.xiaozhi.android.ui.theme.extendedColors
 
 /**
  * 全屏陪学预览底部的输入条（自未接线的 StudyLiveInput 迁移改造）。
@@ -53,9 +56,14 @@ fun StudyLiveInputBar(
             modifier = Modifier
                 .weight(1f)
                 .heightIn(min = 46.dp, max = 112.dp)
-                .clip(RoundedCornerShape(8.dp))
+                .clip(RoundedCornerShape(23.dp))
                 .background(Color.Black.copy(alpha = 0.58f))
-                .padding(horizontal = 13.dp, vertical = 10.dp),
+                .border(
+                    width = 1.dp,
+                    color = Color.White.copy(alpha = 0.16f),
+                    shape = RoundedCornerShape(23.dp)
+                )
+                .padding(horizontal = 14.dp, vertical = 10.dp),
             textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color.White),
             minLines = 1,
             maxLines = 4,
@@ -92,11 +100,19 @@ fun StudyLiveInputBar(
             modifier = Modifier
                 .size(46.dp)
                 .clip(CircleShape)
-                .background(
+                .then(
                     if (value.isBlank()) {
-                        Color.White.copy(alpha = 0.18f)
+                        Modifier.background(Color.White.copy(alpha = 0.18f))
                     } else {
-                        MaterialTheme.colorScheme.primary
+                        // 可发送时用品牌渐变,激活态一目了然
+                        Modifier.background(
+                            Brush.linearGradient(
+                                listOf(
+                                    MaterialTheme.colorScheme.primary,
+                                    MaterialTheme.extendedColors.heroGradientEnd
+                                )
+                            )
+                        )
                     }
                 )
                 .clickable(enabled = value.isNotBlank(), onClick = onSend),

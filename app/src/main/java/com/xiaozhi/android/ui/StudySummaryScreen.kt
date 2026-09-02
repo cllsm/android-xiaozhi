@@ -39,10 +39,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.border
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -50,6 +53,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.xiaozhi.android.study.STUDY_ACHIEVEMENTS
 import com.xiaozhi.android.study.StudySettlement
+import com.xiaozhi.android.ui.theme.extendedColors
 import kotlinx.coroutines.delay
 
 /** 勋章 iconKey → 图标的统一映射（勋章墙与总结页共用） */
@@ -78,6 +82,10 @@ fun StudySummaryScreen(
 ) {
     BackHandler(onBack = onCollect)
 
+    val starGold = MaterialTheme.extendedColors.starGold
+    // 连续打卡的火焰橙:页面内统一取值,避免多处硬编码漂移
+    val flameColor = Color(0xFFFF7043)
+
     // 星星逐颗弹出：最多演示 12 颗，其余用计数表达
     val shownStars = settlement.starsTotal.coerceAtMost(12)
     val starScales = List(shownStars) { remember { Animatable(0f) } }
@@ -94,7 +102,15 @@ fun StudySummaryScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            // 背景从主背景到浅容器的纵向渐变,给"结算仪式"一个柔和的舞台
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        MaterialTheme.colorScheme.surfaceContainerLow,
+                        MaterialTheme.colorScheme.background
+                    )
+                )
+            )
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 24.dp)
             .padding(top = 64.dp, bottom = 32.dp),
@@ -114,28 +130,36 @@ fun StudySummaryScreen(
         )
         Spacer(modifier = Modifier.height(24.dp))
 
-        // 大星星计数
-        Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            Icon(
-                imageVector = Icons.Filled.Star,
-                contentDescription = null,
-                tint = Color(0xFFFFB300),
-                modifier = Modifier.size(44.dp)
-            )
-            Text(
-                text = "$counter",
-                style = MaterialTheme.typography.displaySmall,
-                fontWeight = FontWeight.ExtraBold,
-                color = Color(0xFFFFB300)
-            )
-            Text(
-                text = "颗星",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(bottom = 8.dp)
-            )
+        // 大星星计数:淡金圆形光晕衬托主数字
+        Box(
+            modifier = Modifier
+                .size(150.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.extendedColors.starGoldContainer),
+            contentAlignment = Alignment.Center
+        ) {
+            Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Icon(
+                    imageVector = Icons.Filled.Star,
+                    contentDescription = null,
+                    tint = starGold,
+                    modifier = Modifier.size(44.dp)
+                )
+                Text(
+                    text = "$counter",
+                    style = MaterialTheme.typography.displaySmall,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = starGold
+                )
+                Text(
+                    text = "颗星",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+            }
         }
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(20.dp))
 
         // 星星逐颗弹出
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -143,7 +167,7 @@ fun StudySummaryScreen(
                 Icon(
                     imageVector = Icons.Filled.Star,
                     contentDescription = null,
-                    tint = Color(0xFFFFB300),
+                    tint = starGold,
                     modifier = Modifier
                         .size(22.dp)
                         .scale(scale.value)
@@ -164,8 +188,13 @@ fun StudySummaryScreen(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .clip(RoundedCornerShape(16.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                .border(
+                    width = 1.dp,
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                    shape = RoundedCornerShape(16.dp)
+                )
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
@@ -205,18 +234,18 @@ fun StudySummaryScreen(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 modifier = Modifier
                     .clip(RoundedCornerShape(18.dp))
-                    .background(Color(0xFFFF7043).copy(alpha = 0.14f))
+                    .background(flameColor.copy(alpha = 0.14f))
                     .padding(horizontal = 14.dp, vertical = 8.dp)
             ) {
                 Icon(
                     imageVector = Icons.Filled.LocalFireDepartment,
                     contentDescription = null,
-                    tint = Color(0xFFFF7043)
+                    tint = flameColor
                 )
                 Text(
                     text = "已连续学习 ${settlement.streakDays} 天",
                     style = MaterialTheme.typography.labelLarge,
-                    color = Color(0xFFFF7043)
+                    color = flameColor
                 )
             }
             Spacer(modifier = Modifier.height(16.dp))
@@ -275,6 +304,7 @@ fun StudySummaryScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(52.dp)
+                .shadow(elevation = 4.dp, shape = RoundedCornerShape(50))
         ) {
             Icon(Icons.Filled.Star, contentDescription = null)
             Spacer(modifier = Modifier.width(8.dp))

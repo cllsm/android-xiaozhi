@@ -119,9 +119,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
@@ -160,6 +162,7 @@ import com.xiaozhi.android.media.ScreenCaptureController
 import com.xiaozhi.android.service.MediaProjectionForegroundService
 import com.xiaozhi.android.service.VoiceForegroundService
 import com.xiaozhi.android.ui.theme.XiaozhiTheme
+import com.xiaozhi.android.ui.theme.extendedColors
 import androidx.core.content.FileProvider
 import java.io.File
 import java.text.SimpleDateFormat
@@ -991,7 +994,12 @@ private fun HomeScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(18.dp))
-                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                                .border(
+                                    width = 1.dp,
+                                    color = MaterialTheme.colorScheme.outlineVariant,
+                                    shape = RoundedCornerShape(18.dp)
+                                )
                                 .clickable {
                                     if (prompt.contains("屏幕")) {
                                         requestScreenPrompt(prompt)
@@ -1100,8 +1108,8 @@ private fun HomeScreen(
                     modifier = Modifier
                         .weight(1f)
                         .heightIn(min = 46.dp, max = 132.dp)
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .clip(RoundedCornerShape(23.dp))
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
                         .padding(horizontal = 14.dp, vertical = 10.dp),
                     textStyle = MaterialTheme.typography.bodyMedium.copy(
                         color = MaterialTheme.colorScheme.onBackground
@@ -1165,12 +1173,24 @@ private fun HomeScreen(
                 Box(
                     modifier = Modifier
                         .size(46.dp)
+                        .shadow(
+                            elevation = if (textDraft.isBlank() && draftImage == null) 0.dp else 4.dp,
+                            shape = CircleShape
+                        )
                         .clip(CircleShape)
-                        .background(
+                        .then(
                             if (textDraft.isBlank() && draftImage == null) {
-                                MaterialTheme.colorScheme.surfaceVariant
+                                Modifier.background(MaterialTheme.colorScheme.surfaceContainerHigh)
                             } else {
-                                MaterialTheme.colorScheme.primary
+                                // 可发送时用品牌渐变,提示按钮已激活
+                                Modifier.background(
+                                    Brush.linearGradient(
+                                        listOf(
+                                            MaterialTheme.colorScheme.primary,
+                                            MaterialTheme.extendedColors.heroGradientEnd
+                                        )
+                                    )
+                                )
                             }
                         )
                         .clickable {
@@ -1338,9 +1358,15 @@ private fun AssistantLivePanel(
             modifier = Modifier
                 .weight(1f)
                 .widthIn(max = 320.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-                .padding(horizontal = 12.dp, vertical = 9.dp)
+                .shadow(elevation = 3.dp, shape = RoundedCornerShape(16.dp))
+                .clip(RoundedCornerShape(16.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                .border(
+                    width = 1.dp,
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                    shape = RoundedCornerShape(16.dp)
+                )
+                .padding(horizontal = 14.dp, vertical = 10.dp)
         ) {
             Text(
                 text = runtimeState.currentText.ifBlank {
@@ -1370,8 +1396,14 @@ private fun AssistantLivePanel(
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.primary,
             modifier = Modifier
-                .clip(RoundedCornerShape(14.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .shadow(elevation = 3.dp, shape = RoundedCornerShape(16.dp))
+                .clip(RoundedCornerShape(16.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                .border(
+                    width = 1.dp,
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                    shape = RoundedCornerShape(16.dp)
+                )
                 .clickable {
                     if (runtimeState.deviceState == DeviceState.Listening) {
                         onStopListening()
@@ -1379,7 +1411,7 @@ private fun AssistantLivePanel(
                         onAbort()
                     }
                 }
-                .padding(horizontal = 12.dp, vertical = 8.dp)
+                .padding(horizontal = 14.dp, vertical = 9.dp)
         )
     }
 }
@@ -1411,8 +1443,13 @@ private fun QuickToolsPanel(
         modifier = Modifier
             .fillMaxWidth()
             .padding(bottom = 10.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .clip(RoundedCornerShape(18.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .border(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.outlineVariant,
+                shape = RoundedCornerShape(18.dp)
+            )
             .padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
@@ -1422,8 +1459,8 @@ private fun QuickToolsPanel(
                     Row(
                         modifier = Modifier
                             .weight(1f)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(MaterialTheme.colorScheme.surface)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
                             .clickable {
                                 action()
                                 onAction()
@@ -1471,8 +1508,23 @@ private fun HomeTopBar() {
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        // 品牌渐变圆点:让标题在纯文字页面上有一个稳定的视觉锚点
+        Box(
+            modifier = Modifier
+                .size(12.dp)
+                .clip(CircleShape)
+                .background(
+                    Brush.linearGradient(
+                        listOf(
+                            MaterialTheme.colorScheme.primary,
+                            MaterialTheme.extendedColors.heroGradientEnd
+                        )
+                    )
+                )
+        )
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = "小智",
@@ -1491,15 +1543,20 @@ private fun StatusChip(
 ) {
     Row(
         modifier = Modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(horizontal = 8.dp, vertical = 5.dp),
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .border(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.outlineVariant,
+                shape = RoundedCornerShape(10.dp)
+            )
+            .padding(horizontal = 10.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp)
     ) {
         Box(
             modifier = Modifier
-                .size(7.dp)
+                .size(6.dp)
                 .clip(CircleShape)
                 .background(color)
         )
@@ -1533,10 +1590,10 @@ private fun QuickPromptGrid(
                             .clip(RoundedCornerShape(20.dp))
                             .border(
                                 width = 1.dp,
-                                color = MaterialTheme.colorScheme.outline,
+                                color = MaterialTheme.colorScheme.outlineVariant,
                                 shape = RoundedCornerShape(20.dp)
                             )
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .background(MaterialTheme.colorScheme.surfaceContainerLow)
                             .clickable { onPromptClick(prompt) }
                             .padding(horizontal = 14.dp, vertical = 8.dp)
                     )
@@ -1560,6 +1617,8 @@ private fun PrimaryVoiceButton(
     val containerColor: Color
     val contentColor: Color
     var outlineColor: Color? = null
+    // 主 CTA(开始对话/待命)用品牌渐变,状态色(聆听/打断)保持纯色以示区分
+    var useHeroGradient = false
     val onClick: () -> Unit
 
     when {
@@ -1577,42 +1636,46 @@ private fun PrimaryVoiceButton(
         }
         runtimeState.status == ConnectionStatus.ActivationRequired -> {
             label = "等待设备激活"
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
             contentColor = MaterialTheme.colorScheme.onSurface
-            outlineColor = MaterialTheme.colorScheme.outline
+            outlineColor = MaterialTheme.colorScheme.outlineVariant
             onClick = {}
         }
-        !serviceRunning -> {
-            label = "开始对话"
-            containerColor = MaterialTheme.colorScheme.primary
-            contentColor = MaterialTheme.colorScheme.onPrimary
-            onClick = onStart
-        }
-        settings.wakeWordEnabled -> {
-            label = "唤醒词待命"
-            containerColor = MaterialTheme.colorScheme.primary
-            contentColor = MaterialTheme.colorScheme.onPrimary
-            onClick = onStart
-        }
         else -> {
-            label = "开始对话"
+            label = if (serviceRunning && settings.wakeWordEnabled) "唤醒词待命" else "开始对话"
             containerColor = MaterialTheme.colorScheme.primary
             contentColor = MaterialTheme.colorScheme.onPrimary
+            useHeroGradient = true
             onClick = onStart
         }
     }
 
+    val buttonShape = RoundedCornerShape(24.dp)
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .height(48.dp)
-            .clip(RoundedCornerShape(24.dp))
-            .background(containerColor)
+            .shadow(elevation = 4.dp, shape = buttonShape)
+            .clip(buttonShape)
+            .then(
+                if (useHeroGradient) {
+                    Modifier.background(
+                        Brush.linearGradient(
+                            listOf(
+                                MaterialTheme.colorScheme.primary,
+                                MaterialTheme.extendedColors.heroGradientEnd
+                            )
+                        )
+                    )
+                } else {
+                    Modifier.background(containerColor)
+                }
+            )
             .then(
                 if (outlineColor == null) {
                     Modifier
                 } else {
-                    Modifier.border(1.dp, outlineColor, RoundedCornerShape(24.dp))
+                    Modifier.border(1.dp, outlineColor, buttonShape)
                 }
             )
             .clickable(onClick = onClick),
@@ -1620,7 +1683,7 @@ private fun PrimaryVoiceButton(
     ) {
         Text(
             text = label,
-            style = MaterialTheme.typography.bodyLarge,
+            style = MaterialTheme.typography.labelLarge,
             color = contentColor
         )
     }
@@ -1640,7 +1703,7 @@ private fun RoundIconButton(
                 if (emphasized) {
                     MaterialTheme.colorScheme.primary
                 } else {
-                    MaterialTheme.colorScheme.surfaceVariant
+                    MaterialTheme.colorScheme.surfaceContainerHigh
                 }
             )
             .clickable(onClick = onClick),
@@ -1764,24 +1827,32 @@ private fun ChatBubble(
         Column(
             modifier = Modifier
                 .widthIn(max = 310.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(
+                .clip(RoundedCornerShape(16.dp))
+                .then(
                     if (message.fromUser) {
-                        MaterialTheme.colorScheme.primary
+                        // 用户气泡:主色对角渐变,更有"发出"的方向感
+                        Modifier.background(
+                            Brush.linearGradient(
+                                listOf(
+                                    MaterialTheme.colorScheme.primary,
+                                    MaterialTheme.extendedColors.heroGradientEnd
+                                )
+                            )
+                        )
                     } else {
-                        MaterialTheme.colorScheme.surfaceVariant
+                        Modifier.background(MaterialTheme.colorScheme.surfaceContainerLow)
                     }
                 )
                 .border(
                     width = if (message.fromUser) 0.dp else 1.dp,
-                    color = MaterialTheme.colorScheme.outline,
-                    shape = RoundedCornerShape(12.dp)
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                    shape = RoundedCornerShape(16.dp)
                 )
                 .combinedClickable(
                     onClick = {},
                     onLongClick = { menuOpen = true }
                 )
-                .padding(horizontal = 14.dp, vertical = 10.dp)
+                .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
             DropdownMenu(
                 expanded = menuOpen,
@@ -1812,7 +1883,7 @@ private fun ChatBubble(
                     modifier = Modifier
                         .width(180.dp)
                         .height(120.dp)
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(RoundedCornerShape(12.dp))
                         .clickable { onImageClick(message.imagePath ?: imagePath) },
                     contentScale = ContentScale.Crop
                 )
@@ -1825,6 +1896,7 @@ private fun ChatBubble(
                     MaterialTheme.colorScheme.onBackground
                 }
             )
+            Spacer(modifier = Modifier.height(3.dp))
             Text(
                 text = formatTime(message.timestamp),
                 style = MaterialTheme.typography.labelSmall,
@@ -1926,7 +1998,7 @@ private fun ChatSearchField(
             .fillMaxWidth()
             .height(38.dp)
             .clip(RoundedCornerShape(19.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
             .padding(horizontal = 14.dp, vertical = 10.dp),
         textStyle = MaterialTheme.typography.bodyMedium.copy(
             color = MaterialTheme.colorScheme.onSurface
@@ -1949,15 +2021,22 @@ private fun ChatSearchField(
 
 @Composable
 private fun DateSeparator(timestamp: Long) {
-    Text(
-        text = SimpleDateFormat("yyyy年M月d日", Locale.getDefault()).format(Date(timestamp)),
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp),
-        textAlign = TextAlign.Center
-    )
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = SimpleDateFormat("yyyy年M月d日", Locale.getDefault()).format(Date(timestamp)),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .clip(RoundedCornerShape(9.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                .padding(horizontal = 10.dp, vertical = 3.dp)
+        )
+    }
 }
 
 @Composable
@@ -3048,8 +3127,13 @@ private fun SettingsSection(title: String, content: @Composable () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerLow)
+            .border(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.outlineVariant,
+                shape = RoundedCornerShape(16.dp)
+            )
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
