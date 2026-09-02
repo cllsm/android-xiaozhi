@@ -174,10 +174,12 @@ class XiaozhiWebSocketClient(
         private const val LISTENING_MODE_MANUAL = "manual"
         private const val NORMAL_CLOSE_CODE = 1000
 
-        fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
+        private val sharedClient = OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(0, TimeUnit.MILLISECONDS)
             .pingInterval(20, TimeUnit.SECONDS)
             .build()
+
+        fun defaultClient(): OkHttpClient = sharedClient
     }
 }

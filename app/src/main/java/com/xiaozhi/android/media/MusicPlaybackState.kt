@@ -14,6 +14,13 @@ data class MusicRuntimeState(
     val hasNext: Boolean = false
 ) {
     val active: Boolean get() = loading || hasTrack
+    val playbackStatusLabel: String
+        get() = when {
+            loading -> "匹配中"
+            hasTrack && paused -> "已暂停"
+            hasTrack -> "正在播放"
+            else -> ""
+        }
 }
 
 object MusicPlaybackState {

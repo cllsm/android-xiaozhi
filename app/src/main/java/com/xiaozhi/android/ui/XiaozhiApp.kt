@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
@@ -29,6 +30,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -65,12 +67,17 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.HealthAndSafety
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Mic
@@ -81,8 +88,8 @@ import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.AlertDialog
@@ -92,10 +99,14 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -115,6 +126,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -130,6 +142,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.xiaozhi.android.BuildConfig
@@ -139,7 +153,10 @@ import com.xiaozhi.android.core.ConnectionStatus
 import com.xiaozhi.android.core.DeviceState
 import com.xiaozhi.android.core.SettingsState
 import com.xiaozhi.android.core.SettingsValidator
+import com.xiaozhi.android.core.ThemeMode
+import com.xiaozhi.android.core.UserErrorMessages
 import com.xiaozhi.android.core.VoiceRuntimeState
+import com.xiaozhi.android.core.WakeWordTestState
 import com.xiaozhi.android.data.RecentMusicRecord
 import com.xiaozhi.android.media.MusicSelectionPrompt
 import com.xiaozhi.android.media.MusicRuntimeState
@@ -154,12 +171,14 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 private enum class Screen {
     Onboarding,
     Home,
-    StudyCompanion,
+    Study,
     Settings,
     RecentMusic,
     Developer,
@@ -169,15 +188,25 @@ private enum class Screen {
 
 private enum class DirectVisionAction {
     Screen,
-    Camera
+    Camera,
+    Image
 }
+
+private const val DEVELOPER_UNLOCK_TAPS = 7
 
 @Composable
 fun XiaozhiApp(viewModel: XiaozhiViewModel = viewModel()) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val settingsReady by viewModel.settingsReady.collectAsStateWithLifecycle()
 
-    XiaozhiTheme(darkTheme = settings.darkTheme) {
+    val systemDarkTheme = isSystemInDarkTheme()
+    XiaozhiTheme(
+        darkTheme = when (settings.themeMode) {
+            ThemeMode.System -> systemDarkTheme
+            ThemeMode.Dark -> true
+            ThemeMode.Light -> false
+        }
+    ) {
         AppContent(viewModel, settingsReady)
     }
 }
@@ -197,6 +226,7 @@ private fun AppContent(
     val musicPlaybackState by viewModel.musicPlaybackState.collectAsStateWithLifecycle()
     val musicOperationMessage by viewModel.musicOperationMessage.collectAsStateWithLifecycle()
     val musicSelectionPrompt by viewModel.musicSelectionPrompt.collectAsStateWithLifecycle()
+    val wakeWordTest by viewModel.wakeWordTest.collectAsStateWithLifecycle()
     var showSplash by remember { mutableStateOf(true) }
 
     LaunchedEffect(Unit) {
@@ -209,12 +239,110 @@ private fun AppContent(
             if (settings.onboardingCompleted) Screen.Home else Screen.Onboarding
         )
     }
+    var privacyReturnScreen by remember { mutableStateOf(Screen.Home) }
+    var studyPreviewFullscreen by remember { mutableStateOf(false) }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Box(modifier = Modifier.weight(1f)) {
+                if (!settingsReady) return@Box
+
+                when (screen) {
+                    Screen.Onboarding -> OnboardingScreen(
+                        onFinish = viewModel::completeOnboarding,
+                        onOpenPrivacy = {
+                            privacyReturnScreen = Screen.Onboarding
+                            screen = Screen.Privacy
+                        }
+                    )
+                    Screen.Home -> HomeScreen(
+                        settings = settings,
+                        chat = chat,
+                        runtimeState = runtimeState,
+                        onSendText = viewModel::sendText,
+                        onAnalyzeScreen = viewModel::analyzeScreen,
+                        onAnalyzeCamera = viewModel::analyzeCamera,
+                        onAnalyzeImage = viewModel::analyzeImage,
+                        onOpenRecentMusic = { screen = Screen.RecentMusic },
+                        onOpenStudy = { screen = Screen.Study }
+                    )
+                    Screen.Study -> StudyScreen(
+                        viewModel = viewModel,
+                        onFullscreenChange = { studyPreviewFullscreen = it }
+                    )
+                    Screen.RecentMusic -> RecentMusicScreen(
+                        records = recentMusic,
+                        playbackState = musicPlaybackState,
+                        operationMessage = musicOperationMessage,
+                        onBack = { screen = Screen.Home },
+                        onReplay = viewModel::replayMusic,
+                        onTogglePlayback = viewModel::toggleMusicPlayback,
+                        onClear = viewModel::clearMusicHistory,
+                        onClearMessage = viewModel::clearMusicOperationMessage
+                    )
+                    Screen.Settings -> SettingsScreen(
+                        settings = settings,
+                        onUpdateSettings = viewModel::updateSettings,
+                        onClearChat = viewModel::clearChat,
+                        onResetSettings = viewModel::resetSettings,
+                        onExportChat = viewModel::exportChat,
+                        onImportChat = viewModel::importChat,
+                        onExportCredential = viewModel::exportCredential,
+                        onImportCredential = viewModel::importCredential,
+                        wakeWordTest = wakeWordTest,
+                        onStartWakeWordTest = viewModel::startWakeWordTest,
+                        operationMessage = operationMessage,
+                        onClearOperationMessage = viewModel::clearOperationMessage,
+                        onOpenDiagnostics = { screen = Screen.Diagnostics },
+                        onOpenPrivacy = {
+                            privacyReturnScreen = Screen.Settings
+                            screen = Screen.Privacy
+                        },
+                        onOpenDeveloper = { screen = Screen.Developer }
+                    )
+                    Screen.Developer -> DeveloperSettingsScreen(
+                        settings = settings,
+                        onUpdateSettings = viewModel::updateSettings,
+                        operationMessage = operationMessage,
+                        onClearOperationMessage = viewModel::clearOperationMessage,
+                        onBack = { screen = Screen.Settings }
+                    )
+                    Screen.Diagnostics -> DiagnosticsScreen(
+                        report = diagnosticReport,
+                        checking = diagnosticRunning,
+                        onBack = { screen = Screen.Settings },
+                        onRun = viewModel::runDiagnostics,
+                        onBuildReportText = viewModel::diagnosticText
+                    )
+                    Screen.Privacy -> PrivacyScreen(
+                        onBack = { screen = privacyReturnScreen }
+                    )
+                }
+            }
+
+            if (screen in mainScreens &&
+                !(screen == Screen.Study && studyPreviewFullscreen)
+            ) {
+                MainBottomNavigation(
+                    current = screen,
+                    onSelect = { selected -> screen = selected }
+                )
+            }
+        }
+
+        musicSelectionPrompt?.let { prompt ->
+            MusicSelectionDialog(
+                prompt = prompt,
+                onSelect = viewModel::selectMusicCandidate,
+                onPostponeAutoPlay = viewModel::postponeMusicSelectionAutoPlay,
+                onDismiss = viewModel::dismissMusicSelection
+            )
+        }
+
         AnimatedVisibility(
             visible = showSplash,
             enter = fadeIn(tween(160)),
@@ -228,84 +356,35 @@ private fun AppContent(
                 contentScale = ContentScale.FillBounds
             )
         }
+    }
+}
 
-        if (!settingsReady) return@Box
-        when (screen) {
-            Screen.Onboarding -> OnboardingScreen(
-                onFinish = viewModel::completeOnboarding,
-                onOpenPrivacy = { screen = Screen.Privacy }
-            )
-            Screen.Home -> HomeScreen(
-                settings = settings,
-                chat = chat,
-                runtimeState = runtimeState,
-                onSendText = viewModel::sendText,
-                onAnalyzeScreen = viewModel::analyzeScreen,
-                onAnalyzeCamera = viewModel::analyzeCamera,
-                onOpenSettings = { screen = Screen.Settings },
-                onOpenRecentMusic = { screen = Screen.RecentMusic },
-                onOpenStudyCompanion = { screen = Screen.StudyCompanion }
-            )
-            Screen.StudyCompanion -> StudyCompanionScreen(
-                chat = chat,
-                runtimeState = runtimeState,
-                onSendText = viewModel::sendText,
-                onBack = { screen = Screen.Home }
-            )
-            Screen.RecentMusic -> RecentMusicScreen(
-                records = recentMusic,
-                playbackState = musicPlaybackState,
-                operationMessage = musicOperationMessage,
-                onBack = { screen = Screen.Home },
-                onReplay = viewModel::replayMusic,
-                onTogglePlayback = viewModel::toggleMusicPlayback,
-                onClear = viewModel::clearMusicHistory,
-                onClearMessage = viewModel::clearMusicOperationMessage
-            )
-            Screen.Settings -> SettingsScreen(
-                settings = settings,
-                onUpdateSettings = viewModel::updateSettings,
-                onClearChat = viewModel::clearChat,
-                onResetSettings = viewModel::resetSettings,
-                onExportChat = viewModel::exportChat,
-                onImportChat = viewModel::importChat,
-                onExportCredential = viewModel::exportCredential,
-                onImportCredential = viewModel::importCredential,
-                operationMessage = operationMessage,
-                onClearOperationMessage = viewModel::clearOperationMessage,
-                onOpenDiagnostics = { screen = Screen.Diagnostics },
-                onOpenPrivacy = { screen = Screen.Privacy },
-                onOpenDeveloper = { screen = Screen.Developer },
-                onBack = { screen = Screen.Home }
-            )
-            Screen.Developer -> DeveloperSettingsScreen(
-                settings = settings,
-                onUpdateSettings = viewModel::updateSettings,
-                operationMessage = operationMessage,
-                onClearOperationMessage = viewModel::clearOperationMessage,
-                onBack = { screen = Screen.Settings }
-            )
-            Screen.Diagnostics -> DiagnosticsScreen(
-                report = diagnosticReport,
-                checking = diagnosticRunning,
-                onBack = { screen = Screen.Home },
-                onRun = viewModel::runDiagnostics,
-                onBuildReportText = viewModel::diagnosticText
-            )
-            Screen.Privacy -> PrivacyScreen(
-                onBack = {
-                    screen = if (settings.onboardingCompleted) Screen.Home else Screen.Onboarding
-                }
-            )
-        }
+private val mainScreens = listOf(Screen.Home, Screen.Study, Screen.Settings)
 
-        musicSelectionPrompt?.let { prompt ->
-            MusicSelectionDialog(
-                prompt = prompt,
-                onSelect = viewModel::selectMusicCandidate,
-                onDismiss = viewModel::dismissMusicSelection
-            )
-        }
+@Composable
+private fun MainBottomNavigation(
+    current: Screen,
+    onSelect: (Screen) -> Unit
+) {
+    NavigationBar {
+        NavigationBarItem(
+            selected = current == Screen.Home,
+            onClick = { onSelect(Screen.Home) },
+            icon = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null) },
+            label = { Text("对话") }
+        )
+        NavigationBarItem(
+            selected = current == Screen.Study,
+            onClick = { onSelect(Screen.Study) },
+            icon = { Icon(Icons.Filled.School, contentDescription = null) },
+            label = { Text("陪学") }
+        )
+        NavigationBarItem(
+            selected = current == Screen.Settings,
+            onClick = { onSelect(Screen.Settings) },
+            icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+            label = { Text("设置") }
+        )
     }
 }
 
@@ -313,8 +392,15 @@ private fun AppContent(
 private fun MusicSelectionDialog(
     prompt: MusicSelectionPrompt,
     onSelect: (Int) -> Unit,
+    onPostponeAutoPlay: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val rememberSelectionHint = if (prompt.options.size > 1) {
+        "打开“记住歌曲版本选择”后，相同搜索会优先使用上次选择的版本。"
+    } else {
+        null
+    }
+
     var remainingMillis by remember(prompt.autoSelectAtMillis) {
         mutableStateOf(
             (prompt.autoSelectAtMillis - System.currentTimeMillis()).coerceAtLeast(0L)
@@ -330,22 +416,50 @@ private fun MusicSelectionDialog(
         }
     }
 
+    var currentPage by remember(prompt.query, prompt.options) { mutableStateOf(0) }
+    val pageCount = prompt.pageCount
+    val pageStart = currentPage * prompt.pageSize
+    val visibleOptions = prompt.options.drop(pageStart).take(prompt.pageSize)
+
+    fun changePage(delta: Int) {
+        val nextPage = (currentPage + delta).coerceIn(0, pageCount - 1)
+        if (nextPage != currentPage) {
+            currentPage = nextPage
+            onPostponeAutoPlay()
+        }
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("选择歌曲") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
                 Text(
                     text = "“${prompt.query}”找到 ${prompt.options.size} 个版本，可以直接说或输入序号。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    text = "${(remainingMillis + 999L) / 1000L} 秒后自动播放第 1 首",
+                    text = if (pageCount > 1) {
+                        "第 ${currentPage + 1}/${pageCount} 页，" +
+                            "${(remainingMillis + 999L) / 1000L} 秒后自动播放第 1 首"
+                    } else {
+                        "${(remainingMillis + 999L) / 1000L} 秒后自动播放第 1 首"
+                    },
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary
                 )
-                prompt.options.forEach { option ->
+                rememberSelectionHint?.let { hint ->
+                    Text(
+                        text = hint,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                visibleOptions.forEach { option ->
                     TextButton(
                         onClick = { onSelect(option.number) },
                         modifier = Modifier.fillMaxWidth()
@@ -367,15 +481,58 @@ private fun MusicSelectionDialog(
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
+                                listOf(option.artist, option.album)
+                                    .filter { it.isNotBlank() }
+                                    .joinToString(" · ")
+                                    .takeIf { it.isNotBlank() }
+                                    ?.let { metadata ->
+                                        Text(
+                                            text = metadata,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
                                 Text(
-                                    text = listOf(option.artist, option.album)
-                                        .filter { it.isNotBlank() }
-                                        .joinToString(" · ")
-                                        .ifBlank { option.sourceName },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    text = option.sourceName,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
                                 )
                             }
+                        }
+                    }
+                }
+                if (pageCount > 1) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(
+                            onClick = { changePage(-1) },
+                            enabled = currentPage > 0
+                        ) {
+                            Icon(
+                                Icons.Filled.ChevronLeft,
+                                contentDescription = "上一页"
+                            )
+                        }
+                        Text(
+                            text = "${pageStart + 1}-${
+                                minOf(pageStart + prompt.pageSize, prompt.options.size)
+                            } / ${prompt.options.size}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                            textAlign = TextAlign.Center
+                        )
+                        IconButton(
+                            onClick = { changePage(1) },
+                            enabled = currentPage < pageCount - 1
+                        ) {
+                            Icon(
+                                Icons.Filled.ChevronRight,
+                                contentDescription = "下一页"
+                            )
                         }
                     }
                 }
@@ -396,9 +553,9 @@ private fun HomeScreen(
     onSendText: (String) -> Boolean,
     onAnalyzeScreen: (String) -> Unit,
     onAnalyzeCamera: (String) -> Unit,
-    onOpenSettings: () -> Unit,
+    onAnalyzeImage: (String, Uri) -> Unit,
     onOpenRecentMusic: () -> Unit,
-    onOpenStudyCompanion: () -> Unit
+    onOpenStudy: () -> Unit
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
@@ -410,6 +567,9 @@ private fun HomeScreen(
     var pendingTextNeedsCamera by remember { mutableStateOf(false) }
     var pendingVisionAction by remember { mutableStateOf<DirectVisionAction?>(null) }
     var pendingVisionPrompt by remember { mutableStateOf<String?>(null) }
+    var pendingVisionImage by remember { mutableStateOf<Uri?>(null) }
+    var draftImage by remember { mutableStateOf<Uri?>(null) }
+    var viewingImage by remember { mutableStateOf<String?>(null) }
     var toolsExpanded by remember { mutableStateOf(false) }
     val chatListState = rememberLazyListState()
 
@@ -417,13 +577,25 @@ private fun HomeScreen(
         if (chat.isNotEmpty()) chatListState.animateScrollToItem(chat.lastIndex)
     }
 
+    LaunchedEffect(Unit) {
+        val microphoneReady = context.checkSelfPermission(
+            Manifest.permission.RECORD_AUDIO
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (microphoneReady && !VoiceForegroundService.isRunning()) {
+            VoiceForegroundService.start(context)
+            startRequested = true
+        }
+    }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { grants ->
         val visionAction = pendingVisionAction
         val visionPrompt = pendingVisionPrompt
+        val visionImage = pendingVisionImage
         pendingVisionAction = null
         pendingVisionPrompt = null
+        pendingVisionImage = null
 
         if (grants[Manifest.permission.RECORD_AUDIO] == true) {
             VoiceForegroundService.start(context)
@@ -436,6 +608,8 @@ private fun HomeScreen(
                     visionPrompt?.let(onAnalyzeScreen)
                 DirectVisionAction.Camera ->
                     visionPrompt?.let(onAnalyzeCamera)
+                DirectVisionAction.Image ->
+                    visionImage?.let { image -> onAnalyzeImage(visionPrompt.orEmpty(), image) }
                 null -> if (regularCameraReady) {
                     pendingText?.let(onSendText) ?: VoiceForegroundService.startListening(context)
                 }
@@ -446,6 +620,8 @@ private fun HomeScreen(
                     visionPrompt?.let(onAnalyzeScreen)
                 DirectVisionAction.Camera ->
                     visionPrompt?.let(onAnalyzeCamera)
+                DirectVisionAction.Image ->
+                    visionImage?.let { image -> onAnalyzeImage(visionPrompt.orEmpty(), image) }
                 null -> Unit
             }
         }
@@ -453,7 +629,7 @@ private fun HomeScreen(
         pendingTextNeedsCamera = false
     }
 
-    fun sendFromHome(text: String, needsCamera: Boolean = false) {
+    fun sendFromHome(text: String, needsCamera: Boolean = false): Boolean {
         val microphoneReady = context.checkSelfPermission(
             Manifest.permission.RECORD_AUDIO
         ) == android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -461,8 +637,7 @@ private fun HomeScreen(
             Manifest.permission.CAMERA
         ) == android.content.pm.PackageManager.PERMISSION_GRANTED
         if (microphoneReady && cameraReady) {
-            onSendText(text)
-            return
+            return onSendText(text)
         }
 
         pendingText = text
@@ -476,6 +651,7 @@ private fun HomeScreen(
                 }
             }.toTypedArray()
         )
+        return true
     }
 
     fun requestDirectVision(prompt: String, action: DirectVisionAction) {
@@ -487,6 +663,7 @@ private fun HomeScreen(
             DirectVisionAction.Camera -> context.checkSelfPermission(
                 Manifest.permission.CAMERA
             ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            DirectVisionAction.Image -> true
         }
 
         if (microphoneReady && actionPermissionReady) {
@@ -495,6 +672,7 @@ private fun HomeScreen(
             when (action) {
                 DirectVisionAction.Screen -> onAnalyzeScreen(prompt)
                 DirectVisionAction.Camera -> onAnalyzeCamera(prompt)
+                DirectVisionAction.Image -> Unit
             }
             return
         }
@@ -514,6 +692,61 @@ private fun HomeScreen(
         )
     }
 
+    fun requestImagePrompt(prompt: String, image: Uri) {
+        val microphoneReady = context.checkSelfPermission(
+            Manifest.permission.RECORD_AUDIO
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (microphoneReady) {
+            VoiceForegroundService.start(context)
+            startRequested = true
+            onAnalyzeImage(prompt, image)
+            return
+        }
+
+        pendingVisionAction = DirectVisionAction.Image
+        pendingVisionPrompt = prompt
+        pendingVisionImage = image
+        pendingText = null
+        pendingTextNeedsCamera = false
+        permissionLauncher.launch(
+            buildList {
+                add(Manifest.permission.RECORD_AUDIO)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    add(Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }.toTypedArray()
+        )
+    }
+
+    fun submitHomeInput() {
+        val text = textDraft.trim()
+        val image = draftImage
+        if (image == null) {
+            if (text.isNotEmpty() && sendFromHome(text)) {
+                textDraft = ""
+                toolsExpanded = false
+            }
+            return
+        }
+
+        requestImagePrompt(
+            prompt = text.ifBlank { "描述这张图片的内容" },
+            image = image
+        )
+        textDraft = ""
+        draftImage = null
+        toolsExpanded = false
+    }
+
+    val imagePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { image ->
+        if (image != null) {
+            draftImage = image
+            toolsExpanded = false
+        }
+    }
+
     val projectionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -525,7 +758,9 @@ private fun HomeScreen(
         pendingScreenPrompt = null
     }
 
-    val serviceRunning = startRequested || runtimeState.status != ConnectionStatus.Disconnected
+    val serviceRunning = VoiceForegroundService.isRunning() ||
+        startRequested ||
+        runtimeState.status != ConnectionStatus.Disconnected
     val showActivationDialog = runtimeState.activationCode.isNotBlank() &&
         runtimeState.activationCode != dismissedActivationCode
 
@@ -545,25 +780,7 @@ private fun HomeScreen(
     }
 
     fun startVoiceAction() {
-        val microphoneReady = context.checkSelfPermission(
-            Manifest.permission.RECORD_AUDIO
-        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-        if (serviceRunning &&
-            runtimeState.status == ConnectionStatus.Connected &&
-            runtimeState.deviceState == DeviceState.Idle
-        ) {
-            if (settings.wakeWordEnabled) {
-                VoiceForegroundService.setWakeWordEnabled(context, false)
-            }
-            VoiceForegroundService.startListening(context)
-        } else if (microphoneReady) {
-            VoiceForegroundService.start(context)
-            startRequested = true
-            if (settings.wakeWordEnabled) {
-                VoiceForegroundService.setWakeWordEnabled(context, false)
-            }
-            VoiceForegroundService.startListening(context)
-        } else {
+        if (!serviceRunning) {
             permissionLauncher.launch(
                 buildList {
                     add(Manifest.permission.RECORD_AUDIO)
@@ -573,6 +790,21 @@ private fun HomeScreen(
                     }
                 }.toTypedArray()
             )
+        } else if (
+            runtimeState.status == ConnectionStatus.Error &&
+            !runtimeState.waitingForNetwork
+        ) {
+            VoiceForegroundService.reconnectNow(context)
+        } else if (serviceRunning &&
+            runtimeState.status == ConnectionStatus.Connected &&
+            runtimeState.deviceState == DeviceState.Idle
+        ) {
+            if (settings.wakeWordEnabled) {
+                VoiceForegroundService.setWakeWordEnabled(context, false)
+            }
+            VoiceForegroundService.startListening(context)
+        } else {
+            VoiceForegroundService.startListening(context)
         }
     }
 
@@ -643,18 +875,12 @@ private fun HomeScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .statusBarsPadding()
-            .navigationBarsPadding()
-    ) {
-        HomeTopBar(
-            settings = settings,
-            runtimeState = runtimeState,
-            serviceRunning = serviceRunning,
-            onOpenSettings = onOpenSettings
-        )
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+        ) {
+        HomeTopBar()
 
         if (settings.studyCompanionEnabled) {
             Box(
@@ -663,7 +889,7 @@ private fun HomeScreen(
                     .aspectRatio(16f / 9f)
                     .padding(horizontal = 16.dp, vertical = 10.dp)
                     .clip(RoundedCornerShape(8.dp))
-                    .clickable(onClick = onOpenStudyCompanion)
+                     .clickable(onClick = onOpenStudy)
             ) {
                 StudyCameraPreview(modifier = Modifier.fillMaxSize())
                 Row(
@@ -771,7 +997,8 @@ private fun HomeScreen(
                             onCopy = {
                                 clipboard.setText(AnnotatedString(message.text))
                             },
-                            onResend = { onSendText(message.text) }
+                            onResend = { onSendText(message.text) },
+                            onImageClick = { path -> viewingImage = path }
                         )
                     }
                 }
@@ -809,7 +1036,6 @@ private fun HomeScreen(
                     onObjectLook = {
                         requestCameraPrompt("帮我拍张照看看这是什么东西")
                     },
-                    onVideo = { sendFromHome("帮我录一段视频") },
                     onCamera = { sendFromHome("帮我打开相机") },
                     onMusic = { sendFromHome("播放一段音乐") },
                     onRecentMusic = onOpenRecentMusic,
@@ -818,9 +1044,17 @@ private fun HomeScreen(
                 )
             }
 
+            draftImage?.let { image ->
+                PendingImagePreview(
+                    image = image,
+                    onRemove = { draftImage = null }
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
+                verticalAlignment = Alignment.Bottom,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 RoundIconButton(
@@ -839,30 +1073,24 @@ private fun HomeScreen(
                     onValueChange = { textDraft = it },
                     modifier = Modifier
                         .weight(1f)
-                        .height(46.dp)
-                        .clip(RoundedCornerShape(23.dp))
+                        .heightIn(min = 46.dp, max = 132.dp)
+                        .clip(RoundedCornerShape(20.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant)
-                        .padding(horizontal = 14.dp),
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
                     textStyle = MaterialTheme.typography.bodyMedium.copy(
                         color = MaterialTheme.colorScheme.onBackground
                     ),
-                    singleLine = true,
+                    minLines = 1,
+                    maxLines = 6,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(
-                        onSend = {
-                            val text = textDraft.trim()
-                            if (text.isNotEmpty()) {
-                                sendFromHome(text)
-                                textDraft = ""
-                                toolsExpanded = false
-                            }
-                        }
+                        onSend = { submitHomeInput() }
                     ),
                     decorationBox = { innerTextField ->
                         Box(contentAlignment = Alignment.CenterStart) {
                             if (textDraft.isEmpty()) {
                                 Text(
-                                    "给小智发消息",
+                                    if (draftImage == null) "给小智发消息" else "补充图片要求",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -870,6 +1098,13 @@ private fun HomeScreen(
                             innerTextField()
                         }
                     }
+                )
+
+                RoundIconButton(
+                    icon = {
+                        Icon(Icons.Filled.Image, contentDescription = "发送图片")
+                    },
+                    onClick = { imagePicker.launch("image/*") }
                 )
 
                 RoundIconButton(
@@ -906,18 +1141,15 @@ private fun HomeScreen(
                         .size(46.dp)
                         .clip(CircleShape)
                         .background(
-                            if (textDraft.isBlank()) {
+                            if (textDraft.isBlank() && draftImage == null) {
                                 MaterialTheme.colorScheme.surfaceVariant
                             } else {
                                 MaterialTheme.colorScheme.primary
                             }
                         )
                         .clickable {
-                            val text = textDraft.trim()
-                            if (text.isNotEmpty()) {
-                                sendFromHome(text)
-                                textDraft = ""
-                                toolsExpanded = false
+                            if (textDraft.isNotBlank() || draftImage != null) {
+                                submitHomeInput()
                             }
                         },
                     contentAlignment = Alignment.Center
@@ -925,7 +1157,7 @@ private fun HomeScreen(
                     Icon(
                         Icons.AutoMirrored.Filled.Send,
                         contentDescription = "发送",
-                        tint = if (textDraft.isBlank()) {
+                        tint = if (textDraft.isBlank() && draftImage == null) {
                             MaterialTheme.colorScheme.onSurfaceVariant
                         } else {
                             MaterialTheme.colorScheme.onPrimary
@@ -936,6 +1168,12 @@ private fun HomeScreen(
         }
     }
 
+    viewingImage?.let { path ->
+        ImageViewerDialog(
+            path = path,
+            onDismiss = { viewingImage = null }
+        )
+    }
     }
 }
 
@@ -1195,7 +1433,7 @@ private fun StudyLiveInput(
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
+        verticalAlignment = Alignment.Bottom,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         BasicTextField(
@@ -1203,12 +1441,13 @@ private fun StudyLiveInput(
             onValueChange = onValueChange,
             modifier = Modifier
                 .weight(1f)
-                .height(46.dp)
+                .heightIn(min = 46.dp, max = 112.dp)
                 .clip(RoundedCornerShape(8.dp))
                 .background(Color.Black.copy(alpha = 0.58f))
-                .padding(horizontal = 13.dp),
+                .padding(horizontal = 13.dp, vertical = 10.dp),
             textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color.White),
-            singleLine = true,
+            minLines = 1,
+            maxLines = 4,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
             keyboardActions = KeyboardActions(onSend = { onSend() }),
             decorationBox = { field ->
@@ -1459,7 +1698,6 @@ private fun QuickToolsPanel(
     onScreenRead: () -> Unit,
     onFrontLook: () -> Unit,
     onObjectLook: () -> Unit,
-    onVideo: () -> Unit,
     onCamera: () -> Unit,
     onMusic: () -> Unit,
     onRecentMusic: () -> Unit,
@@ -1471,7 +1709,6 @@ private fun QuickToolsPanel(
         Triple("读屏幕文字", "朗读屏幕内容") { onScreenRead() },
         Triple("看看面前", "调用前置相机") { onFrontLook() },
         Triple("识别物体", "拍照后识别") { onObjectLook() },
-        Triple("录段视频", "录制一段视频") { onVideo() },
         Triple("打开相机", "启动系统相机") { onCamera() },
         Triple("播放音乐", "播放默认音乐") { onMusic() },
         Triple("最近播放", "重播歌曲") { onRecentMusic() },
@@ -1508,7 +1745,6 @@ private fun QuickToolsPanel(
                                 "看看屏幕" -> Icons.Filled.Visibility
                                 "读屏幕文字" -> Icons.Filled.Description
                                 "看看面前", "识别物体" -> Icons.Filled.PhotoCamera
-                                "录段视频" -> Icons.Filled.Videocam
                                 "打开相机" -> Icons.Filled.CameraAlt
                                 "播放音乐" -> Icons.Filled.MusicNote
                                 else -> Icons.Filled.WbSunny
@@ -1538,12 +1774,7 @@ private fun QuickToolsPanel(
 }
 
 @Composable
-private fun HomeTopBar(
-    settings: SettingsState,
-    runtimeState: VoiceRuntimeState,
-    serviceRunning: Boolean,
-    onOpenSettings: () -> Unit
-) {
+private fun HomeTopBar() {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1556,68 +1787,7 @@ private fun HomeTopBar(
                 style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onBackground
             )
-            Spacer(modifier = Modifier.height(2.dp))
-            HomeStatusPill(
-                label = homeStatusLabel(runtimeState, serviceRunning),
-                color = homeStatusColor(runtimeState, serviceRunning)
-            )
         }
-
-        RoundIconButton(
-            icon = { Icon(Icons.Filled.Settings, contentDescription = "设置") },
-            onClick = onOpenSettings
-        )
-    }
-}
-
-@Composable
-private fun HomeStatusPill(label: String, color: Color) {
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(5.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .size(7.dp)
-                .clip(CircleShape)
-                .background(color)
-        )
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
-}
-
-private fun homeStatusLabel(
-    state: VoiceRuntimeState,
-    serviceRunning: Boolean
-): String {
-    return when {
-        !serviceRunning -> "可开始对话"
-        state.status == ConnectionStatus.ActivationRequired -> "待激活"
-        state.deviceState == DeviceState.Listening -> "正在聆听"
-        state.deviceState == DeviceState.Speaking -> "正在回复"
-        else -> if (state.wakeWordEnabled) "唤醒词待命" else "可开始对话"
-    }
-}
-
-@Composable
-private fun homeStatusColor(
-    state: VoiceRuntimeState,
-    serviceRunning: Boolean
-): Color {
-    return when {
-        !serviceRunning -> MaterialTheme.colorScheme.primary
-        state.status == ConnectionStatus.ActivationRequired -> MaterialTheme.colorScheme.error
-        state.deviceState == DeviceState.Listening -> MaterialTheme.colorScheme.tertiary
-        state.deviceState == DeviceState.Speaking -> MaterialTheme.colorScheme.secondary
-        else -> MaterialTheme.colorScheme.primary
     }
 }
 
@@ -1797,11 +1967,102 @@ private fun RoundIconButton(
 }
 
 @Composable
+private fun PendingImagePreview(
+    image: Uri,
+    onRemove: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        ContentUriImage(
+            uri = image,
+            contentDescription = "待发送图片",
+            modifier = Modifier.size(54.dp)
+        )
+        Text(
+            text = "已选择图片，可补充要求后发送",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f)
+        )
+        RoundIconButton(
+            icon = {
+                Icon(Icons.Filled.Close, contentDescription = "移除图片")
+            },
+            onClick = onRemove
+        )
+    }
+}
+
+@Composable
+private fun ContentUriImage(
+    uri: Uri,
+    contentDescription: String?,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    var bitmap by remember(uri) {
+        mutableStateOf<android.graphics.Bitmap?>(null)
+    }
+
+    LaunchedEffect(uri) {
+        bitmap = withContext(Dispatchers.IO) {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                BitmapFactory.decodeStream(input, null, bounds)
+            }
+            var sampleSize = 1
+            while (
+                bounds.outWidth / (sampleSize * 2) >= 512 &&
+                bounds.outHeight / (sampleSize * 2) >= 512
+            ) {
+                sampleSize *= 2
+            }
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                BitmapFactory.decodeStream(
+                    input,
+                    null,
+                    BitmapFactory.Options().apply { inSampleSize = sampleSize }
+                )
+            }
+        }
+    }
+
+    val loadedBitmap = bitmap
+    if (loadedBitmap != null) {
+        Image(
+            bitmap = loadedBitmap.asImageBitmap(),
+            contentDescription = contentDescription,
+            modifier = modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            contentScale = ContentScale.Crop
+        )
+    } else {
+        Box(
+            modifier = modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Filled.Image,
+                contentDescription = contentDescription,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
 @OptIn(ExperimentalFoundationApi::class)
 private fun ChatBubble(
     message: ChatMessage,
     onCopy: () -> Unit,
-    onResend: () -> Unit
+    onResend: () -> Unit,
+    onImageClick: (String) -> Unit
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     Box(
@@ -1851,6 +2112,20 @@ private fun ChatBubble(
                     )
                 }
             }
+            val imagePath = message.thumbnailPath ?: message.imagePath
+            if (imagePath != null) {
+                LocalFileImage(
+                    path = imagePath,
+                    contentDescription = "查看图片",
+                    modifier = Modifier
+                        .width(180.dp)
+                        .height(120.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { onImageClick(message.imagePath ?: imagePath) },
+                    contentScale = ContentScale.Crop
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+            }
             Text(
                 text = message.text,
                 style = MaterialTheme.typography.bodyMedium,
@@ -1869,6 +2144,79 @@ private fun ChatBubble(
                 textAlign = TextAlign.End,
                 modifier = Modifier.fillMaxWidth()
             )
+        }
+    }
+}
+
+@Composable
+private fun ImageViewerDialog(
+    path: String,
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .clickable(onClick = onDismiss),
+            contentAlignment = Alignment.Center
+        ) {
+            LocalFileImage(
+                path = path,
+                contentDescription = "图片预览",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Fit
+            )
+        }
+    }
+}
+
+@Composable
+private fun LocalFileImage(
+    path: String,
+    contentDescription: String?,
+    modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop
+) {
+    var bitmap by remember(path) {
+        mutableStateOf<android.graphics.Bitmap?>(null)
+    }
+
+    LaunchedEffect(path) {
+        bitmap = withContext(Dispatchers.IO) {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(path, bounds)
+            var sampleSize = 1
+            while (
+                bounds.outWidth / (sampleSize * 2) >= 720 &&
+                bounds.outHeight / (sampleSize * 2) >= 720
+            ) {
+                sampleSize *= 2
+            }
+            BitmapFactory.decodeFile(
+                path,
+                BitmapFactory.Options().apply { inSampleSize = sampleSize }
+            )
+        }
+    }
+
+    val loadedBitmap = bitmap
+    if (loadedBitmap != null) {
+        Image(
+            bitmap = loadedBitmap.asImageBitmap(),
+            contentDescription = contentDescription,
+            modifier = modifier,
+            contentScale = contentScale
+        )
+    } else {
+        Box(
+            modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator(modifier = Modifier.size(22.dp))
         }
     }
 }
@@ -2210,19 +2558,24 @@ private fun SettingsScreen(
     onImportChat: (android.net.Uri) -> Unit,
     onExportCredential: (Uri, String) -> Unit,
     onImportCredential: (Uri, String) -> Unit,
+    wakeWordTest: WakeWordTestState,
+    onStartWakeWordTest: (SettingsState) -> Unit,
     operationMessage: String?,
     onClearOperationMessage: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onOpenPrivacy: () -> Unit,
     onOpenDeveloper: () -> Unit,
-    onBack: () -> Unit
 ) {
     var draft by remember(settings) { mutableStateOf(settings) }
     val context = LocalContext.current
     var saveToast by remember { mutableStateOf<String?>(null) }
     var showClearDialog by remember { mutableStateOf(false) }
     var showResetDialog by remember { mutableStateOf(false) }
+    var showHelpDialog by remember { mutableStateOf(false) }
     var settingsQuery by remember { mutableStateOf("") }
+    var developerUnlocked by remember { mutableStateOf(false) }
+    var versionTaps by remember { mutableStateOf(0) }
+    var pendingWakeTest by remember { mutableStateOf<SettingsState?>(null) }
     var pendingExportUri by remember { mutableStateOf<Uri?>(null) }
     var pendingImportUri by remember { mutableStateOf<Uri?>(null) }
     val validation = remember(draft) { SettingsValidator.validate(draft) }
@@ -2239,6 +2592,30 @@ private fun SettingsScreen(
     val importCredentialLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri -> pendingImportUri = uri }
+    val wakeTestPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val draftToTest = pendingWakeTest
+        pendingWakeTest = null
+        if (granted) {
+            onStartWakeWordTest(draftToTest ?: return@rememberLauncherForActivityResult)
+        } else {
+            saveToast = "未授权麦克风，无法测试唤醒词"
+        }
+    }
+
+    fun launchWakeWordTest() {
+        onUpdateSettings(draft)
+        saveToast = "设置已保存"
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            onStartWakeWordTest(draft)
+        } else {
+            pendingWakeTest = draft
+            wakeTestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
 
     LaunchedEffect(saveToast) {
         if (saveToast != null) {
@@ -2266,19 +2643,9 @@ private fun SettingsScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
+                .padding(start = 20.dp, end = 16.dp, top = 14.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            RoundIconButton(
-                icon = {
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "返回"
-                    )
-                },
-                onClick = onBack
-            )
-            Spacer(modifier = Modifier.width(12.dp))
             Text(
                 "设置",
                 color = MaterialTheme.colorScheme.onBackground,
@@ -2291,7 +2658,6 @@ private fun SettingsScreen(
                 .fillMaxWidth()
                 .weight(1f)
                 .verticalScroll(rememberScrollState())
-                .navigationBarsPadding()
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
@@ -2331,6 +2697,25 @@ private fun SettingsScreen(
                         ) {
                             draft = draft.copy(wakeWordSensitivity = it)
                         }
+                        SettingsHint("数值越高越容易唤醒，也越可能误唤醒；改完可以立即测试")
+                        OutlinedButton(
+                            onClick = ::launchWakeWordTest,
+                            enabled = validation.valid && !wakeWordTest.running,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                if (wakeWordTest.running) {
+                                    "测试中 · 剩余 ${wakeWordTest.remainingSeconds} 秒"
+                                } else {
+                                    "测试唤醒词"
+                                }
+                            )
+                        }
+                        if (wakeWordTest.message.isNotBlank()) {
+                            SettingsHint(
+                                "命中 ${wakeWordTest.hits} 次 · ${wakeWordTest.message}"
+                            )
+                        }
                     }
                 }
             }
@@ -2341,13 +2726,15 @@ private fun SettingsScreen(
                 SettingsLabel("主题模式")
                 SettingsRadioGroup(
                     options = listOf(
+                        SettingsOption("跟随系统", "system"),
                         SettingsOption("深色", "dark"),
                         SettingsOption("浅色", "light")
                     ),
-                    selected = if (draft.darkTheme) "dark" else "light"
+                    selected = draft.themeMode.name.lowercase()
                 ) { value ->
-                    val newValue = value == "dark"
-                    draft = draft.copy(darkTheme = newValue)
+                    val newValue = ThemeMode.values().firstOrNull { it.name.lowercase() == value }
+                        ?: ThemeMode.System
+                    draft = draft.copy(themeMode = newValue)
                     onUpdateSettings(draft)
                 }
             }
@@ -2442,14 +2829,28 @@ private fun SettingsScreen(
                 ) {
                     draft = draft.copy(connectRetryEnabled = it)
                 }
+                SwitchSettingRow(
+                    label = "记住歌曲版本选择",
+                    hint = "同一首歌下次搜索时优先使用你上次选择的版本",
+                    checked = draft.musicRememberSelection
+                ) {
+                    draft = draft.copy(musicRememberSelection = it)
+                }
             }
             }
 
             if (sectionVisible(settingsQuery, "悬浮窗", "悬浮窗 快捷球 overlay 后台")) {
                 SettingsSection("悬浮窗") {
                 SwitchSettingRow(
-                    label = "启用悬浮窗",
-                    hint = "应用内快捷球；最小化后可在其他应用中聆听、打断或停止服务",
+                    label = "音乐灵动岛",
+                    hint = "播放或搜索歌曲时，在顶部显示播放状态",
+                    checked = draft.musicIslandEnabled
+                ) {
+                    draft = draft.copy(musicIslandEnabled = it)
+                }
+                SwitchSettingRow(
+                    label = "语音快捷球",
+                    hint = "最小化后可在其他应用中聆听、打断或停止服务",
                     checked = draft.overlayEnabled
                 ) {
                     draft = draft.copy(overlayEnabled = it)
@@ -2460,10 +2861,14 @@ private fun SettingsScreen(
             if (sectionVisible(
                     settingsQuery,
                     "诊断与隐私",
-                    "诊断 检测 权限 网络 日志 隐私 数据"
+                    "帮助 反馈 诊断 检测 权限 网络 日志 隐私 数据"
                 )
             ) {
                 SettingsSection("诊断与隐私") {
+                    SettingsActionRow(
+                        title = "帮助与反馈",
+                        hint = "常见问题、反馈入口和诊断报告说明"
+                    ) { showHelpDialog = true }
                     SettingsActionRow(
                         title = "运行诊断",
                         hint = "检查权限、网络、配置、链路和后台运行"
@@ -2477,7 +2882,28 @@ private fun SettingsScreen(
 
             if (sectionVisible(settingsQuery, "关于", "关于 版本 默认 恢复")) {
                 SettingsSection("关于") {
-                SettingsValueRow("版本", BuildConfig.VERSION_NAME)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable {
+                                versionTaps += 1
+                                if (versionTaps >= DEVELOPER_UNLOCK_TAPS) {
+                                    developerUnlocked = true
+                                    saveToast = "开发者配置已解锁"
+                                }
+                            }
+                            .padding(horizontal = 4.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        SettingsLabel("版本")
+                        Spacer(modifier = Modifier.weight(1f))
+                        Text(
+                            text = BuildConfig.VERSION_NAME,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     SettingsActionRow(
                         title = "恢复默认设置",
                         hint = "重置唤醒词、音频、音乐和外观配置"
@@ -2487,11 +2913,15 @@ private fun SettingsScreen(
                 }
             }
 
-            SettingsSection("开发者配置") {
-                SettingsActionRow(
-                    title = "打开开发者配置",
-                    hint = "网络、音频和音乐源"
-                ) { onOpenDeveloper() }
+            if (developerUnlocked) {
+                SettingsSection("开发者配置") {
+                    SettingsActionRow(
+                        title = "打开开发者配置",
+                        hint = "网络、音频和音乐源；修改后请确认能恢复"
+                    ) { onOpenDeveloper() }
+                }
+            } else if (sectionVisible(settingsQuery, "关于", "关于 版本")) {
+                SettingsHint("连续点版本号 $DEVELOPER_UNLOCK_TAPS 次可解锁开发者配置")
             }
 
             Button(
@@ -2569,6 +2999,44 @@ private fun SettingsScreen(
                 },
                 dismissButton = {
                     TextButton(onClick = { showClearDialog = false }) { Text("取消") }
+                }
+            )
+        }
+
+        if (showHelpDialog) {
+            AlertDialog(
+                onDismissRequest = { showHelpDialog = false },
+                title = { Text("帮助与反馈") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("叫不醒：先在设置的唤醒词里点“测试唤醒词”，再按提示调高灵敏度。")
+                        Text("没声音或连接失败：运行诊断，并把诊断报告分享给反馈渠道。")
+                        Text("相机、屏幕识别、悬浮窗：首次使用对应功能时会再次申请，不需要重新安装。")
+                        Text("换机或重装：可先在设置里加密备份激活凭证和聊天记录。")
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            showHelpDialog = false
+                            val feedback = buildString {
+                                appendLine("小智 Android 反馈")
+                                appendLine("版本：${BuildConfig.VERSION_NAME}")
+                                appendLine("问题描述：")
+                            }
+                            context.startActivity(
+                                Intent.createChooser(
+                                    Intent(Intent.ACTION_SEND)
+                                        .setType("text/plain")
+                                        .putExtra(Intent.EXTRA_TEXT, feedback),
+                                    "分享反馈"
+                                )
+                            )
+                        }
+                    ) { Text("去反馈") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showHelpDialog = false }) { Text("知道了") }
                 }
             )
         }
@@ -2762,7 +3230,15 @@ private fun DeveloperSettingsScreen(
                     ) {
                         draft = draft.copy(websocketToken = it)
                     }
-                    SettingsHint("语音服务通过 WebSocket 直连")
+                    LabeledField(
+                        "MCP 接入点",
+                        draft.mcpEndpointUrl,
+                        placeholder = "wss://...（智能体专属）",
+                        secret = true
+                    ) {
+                        draft = draft.copy(mcpEndpointUrl = it)
+                    }
+                    SettingsHint("语音与 MCP 分开连接；默认接入点已内置，可本机覆盖")
                 }
 
                 SettingsSection("音频设置") {
@@ -3193,6 +3669,35 @@ private fun snapToSteps(
     val stepSize = (range.endInclusive - range.start) / intervalCount
     val stepped = ((value - range.start) / stepSize).roundToInt() * stepSize + range.start
     return stepped.coerceIn(range.start, range.endInclusive)
+}
+
+private fun stateLabel(state: DeviceState): String {
+    return when (state) {
+        DeviceState.Idle -> "待机"
+        DeviceState.Connecting -> "连接中"
+        DeviceState.Listening -> "聆听中"
+        DeviceState.Speaking -> "回复中"
+    }
+}
+
+private fun serverLabel(status: ConnectionStatus): String {
+    return when (status) {
+        ConnectionStatus.Connected -> "已连接"
+        ConnectionStatus.Connecting -> "连接中"
+        ConnectionStatus.ActivationRequired -> "待激活"
+        ConnectionStatus.Disconnected -> "待连接"
+        ConnectionStatus.Error -> "断开"
+    }
+}
+
+@Composable
+private fun serverColor(status: ConnectionStatus): Color {
+    return when (status) {
+        ConnectionStatus.Connected -> MaterialTheme.colorScheme.tertiary
+        ConnectionStatus.Connecting,
+        ConnectionStatus.ActivationRequired -> MaterialTheme.colorScheme.secondary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
 }
 
 private fun emotionEmoji(emotion: String): String? {

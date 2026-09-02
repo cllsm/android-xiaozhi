@@ -2,6 +2,7 @@
 .gradle/
 .kotlin/
 .inspect/
+.android/
 build/
 app/build/
 local.properties
@@ -24,6 +25,7 @@ mcp-token.txt
 *.tmp
 *.temp
 *.bak
+__pycache__/
 t.mb
 
 # Local backups (debug snapshots, data archives, old APKs)

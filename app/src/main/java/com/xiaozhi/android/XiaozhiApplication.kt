@@ -4,6 +4,7 @@ import android.app.Application
 import com.xiaozhi.android.data.ChatHistoryRepository
 import com.xiaozhi.android.data.MusicHistoryRepository
 import com.xiaozhi.android.data.SettingsRepository
+import com.xiaozhi.android.study.StudySessionManager
 
 class XiaozhiApplication : Application() {
     lateinit var settingsRepository: SettingsRepository
@@ -18,5 +19,6 @@ class XiaozhiApplication : Application() {
         chatHistoryRepository = ChatHistoryRepository.initialize(this)
         musicHistoryRepository = MusicHistoryRepository.initialize(this)
         settingsRepository = SettingsRepository(this)
+        StudySessionManager.initialize(this)
     }
 }

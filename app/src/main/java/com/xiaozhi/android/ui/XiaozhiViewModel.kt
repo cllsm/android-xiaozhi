@@ -12,7 +12,11 @@ import com.xiaozhi.android.core.SettingsState
 import com.xiaozhi.android.core.UserErrorMessages
 import com.xiaozhi.android.core.VoiceRuntimeState
 import com.xiaozhi.android.core.VoiceSessionState
+import com.xiaozhi.android.core.WakeWordTestState
+import com.xiaozhi.android.audio.AudioInputEngine
 import com.xiaozhi.android.data.ChatHistoryRepository
+import com.xiaozhi.android.data.ChatImageStore
+import com.xiaozhi.android.data.StoredChatImage
 import com.xiaozhi.android.data.DeviceCredentialRepository
 import com.xiaozhi.android.data.DiagnosticRepository
 import com.xiaozhi.android.data.MusicHistoryRepository
@@ -26,6 +30,16 @@ import com.xiaozhi.android.mcp.ScreenVisionPromptBuilder
 import com.xiaozhi.android.mcp.VisionService
 import com.xiaozhi.android.service.MediaProjectionForegroundService
 import com.xiaozhi.android.service.VoiceForegroundService
+import com.xiaozhi.android.wake.SherpaWakeWordEngine
+import com.xiaozhi.android.data.StudySessionRepository
+import com.xiaozhi.android.study.ReadingPromptBuilder
+import com.xiaozhi.android.study.StudyCaptureResult
+import com.xiaozhi.android.study.StudyMode
+import com.xiaozhi.android.study.StudyObservationEngine
+import com.xiaozhi.android.study.StudySessionManager
+import com.xiaozhi.android.study.StudySessionRecord
+import com.xiaozhi.android.study.StudySessionState
+import com.xiaozhi.android.study.StudySettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,6 +57,7 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
     private val diagnosticRepository = DiagnosticRepository(application)
     private val credentialRepository = DeviceCredentialRepository(application)
     private val musicHistoryRepository = MusicHistoryRepository.initialize(application)
+    private val studySessionRepository = StudySessionRepository(application)
     private val visionRunning = AtomicBoolean(false)
 
     private val settingsFlow = MutableStateFlow(SettingsState())
@@ -60,6 +75,15 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
     val musicPlaybackState = MusicPlaybackState.state
 
     val musicSelectionPrompt = NativeMusicController.selectionPrompt
+
+    private val wakeWordTestFlow = MutableStateFlow(WakeWordTestState())
+    val wakeWordTest: StateFlow<WakeWordTestState> = wakeWordTestFlow.asStateFlow()
+
+    private var wakeWordTestJob: kotlinx.coroutines.Job? = null
+
+    val studyState = StudySessionState.state
+    val studySettings = studySessionRepository.settings
+    val studyRecords = studySessionRepository.records
 
     private val diagnosticReportFlow = MutableStateFlow<DiagnosticReport?>(null)
     val diagnosticReport: StateFlow<DiagnosticReport?> = diagnosticReportFlow.asStateFlow()
@@ -110,6 +134,12 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
     fun completeOnboarding() {
         if (settingsFlow.value.onboardingCompleted) return
         updateSettings(settingsFlow.value.copy(onboardingCompleted = true))
+        if (chat.value.isEmpty()) {
+            VoiceSessionState.appendChat(
+                "你好，我是小智。可以先点下面的麦克风说话，也可以直接打字；相机、屏幕识别这些能力等到你第一次使用时再授权。",
+                fromUser = false
+            )
+        }
     }
 
     fun resetSettings() {
@@ -159,13 +189,181 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
         NativeMusicController.clearPendingSelection()
     }
 
+    fun postponeMusicSelectionAutoPlay() {
+        NativeMusicController.postponeSelectionAutoPlay()
+    }
+
     fun clearMusicHistory() {
         musicHistoryRepository.clear()
         musicOperationMessageFlow.value = "最近播放已清空"
     }
 
+    fun startWakeWordTest(settings: SettingsState) {
+        if (wakeWordTestFlow.value.running) return
+        if (getApplication<Application>().checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            wakeWordTestFlow.value = WakeWordTestState(
+                message = "需要麦克风权限才能测试唤醒词"
+            )
+            return
+        }
+        if (VoiceForegroundService.isRunning()) {
+            wakeWordTestFlow.value = WakeWordTestState(
+                message = "语音服务正在使用麦克风，请先在对话页停止服务"
+            )
+            return
+        }
+
+        wakeWordTestJob?.cancel()
+        wakeWordTestFlow.value = WakeWordTestState(
+            running = true,
+            remainingSeconds = WAKE_WORD_TEST_SECONDS,
+            message = "请自然地说 3 遍：“${settings.wakeWordText}”"
+        )
+        wakeWordTestJob = viewModelScope.launch(Dispatchers.IO) {
+            var wakeEngine: SherpaWakeWordEngine? = null
+            var audioInput: AudioInputEngine? = null
+            try {
+                wakeEngine = SherpaWakeWordEngine(
+                    context = getApplication(),
+                    settings = settings,
+                    onDetected = { keyword ->
+                        val current = wakeWordTestFlow.value
+                        wakeWordTestFlow.value = current.copy(
+                            hits = current.hits + 1,
+                            message = "已命中：$keyword"
+                        )
+                    },
+                    onError = { message ->
+                        val current = wakeWordTestFlow.value
+                        wakeWordTestFlow.value = current.copy(
+                            message = "唤醒词错误：$message"
+                        )
+                    }
+                )
+                audioInput = AudioInputEngine(
+                    onPacket = {},
+                    onSamples = { samples -> wakeEngine?.process(samples) },
+                    initialSendingEnabled = false,
+                    aecEnabled = settings.aecEnabled
+                ).also { it.start() }
+
+                repeat(WAKE_WORD_TEST_SECONDS) {
+                    delay(1_000)
+                    val current = wakeWordTestFlow.value
+                    wakeWordTestFlow.value = current.copy(
+                        remainingSeconds = current.remainingSeconds - 1
+                    )
+                }
+            } finally {
+                audioInput?.stop()
+                wakeEngine?.close()
+                val current = wakeWordTestFlow.value
+                wakeWordTestFlow.value = current.copy(
+                    running = false,
+                    remainingSeconds = 0,
+                    message = when {
+                        current.hits > 0 -> "测试完成，命中 ${current.hits} 次，当前设置可用"
+                        else -> "测试完成但未命中。建议先调高灵敏度，再保持环境安静重试"
+                    }
+                )
+            }
+        }
+    }
+
     fun clearMusicOperationMessage() {
         musicOperationMessageFlow.value = null
+    }
+
+    fun startStudy(mode: StudyMode) {
+        val result = StudySessionManager.start(mode)
+        VoiceSessionState.appendChat(result.message, fromUser = false)
+    }
+
+    fun confirmStudySetup(): Boolean {
+        return StudySessionManager.confirmCameraSetup()
+    }
+
+    fun captureHomeworkPage(intent: String, questionNumber: Int? = null) {
+        runStudyCapture {
+            StudySessionManager.captureHomeworkPage(intent, questionNumber)
+        }
+    }
+
+    fun captureReadingPage() {
+        runStudyCapture {
+            StudySessionManager.captureReadingPage()
+        }
+    }
+
+    fun requestHomeworkHint(questionNumber: Int) {
+        val context = StudySessionManager.homeworkContext(questionNumber)
+        if (!context.success) {
+            VoiceSessionState.appendChat(context.message, fromUser = false)
+            return
+        }
+        val payload = context.payload ?: return
+        val prompt = """
+            请按陪学导师规则讲解第 ${payload.optInt("item_index")} 题。
+            题目：${payload.optString("question")}
+            年级：${studyState.value.settings.childGrade}
+            提示层级：${payload.optInt("hint_level")}
+            ${payload.optJSONObject("teaching_rules")?.optString("instruction").orEmpty()}
+            要求：先肯定孩子已经做到的部分；不要提工具和 JSON；
+            除最终计算结果外可以逐步引导；最后让孩子说出或写出下一步。
+        """.trimIndent()
+        sendText(prompt)
+    }
+
+    fun repeatReadingSentence() {
+        val context = StudySessionManager.readingContext()
+        if (!context.success) {
+            VoiceSessionState.appendChat(context.message, fromUser = false)
+            return
+        }
+        val sentence = context.payload?.optString("sentence").orEmpty()
+        sendText("请用清晰、温和的儿童领读口吻只朗读这句话：$sentence")
+    }
+
+    fun askReadingComprehension() {
+        val context = StudySessionManager.readingContext()
+        if (!context.success) {
+            VoiceSessionState.appendChat(context.message, fromUser = false)
+            return
+        }
+        val sentence = context.payload?.optString("sentence").orEmpty()
+        sendText(ReadingPromptBuilder.buildQuestion(sentence, studyState.value.settings.childGrade))
+    }
+
+    fun moveReadingSentence(delta: Int) {
+        StudySessionManager.moveReadingSentence(delta)
+    }
+
+    fun stopStudy(): StudySessionRecord? {
+        val record = StudySessionManager.stop()
+        VoiceSessionState.appendChat(
+            record?.let {
+                "本次陪学结束。${StudySessionManager.friendlySummary(it)}"
+            } ?: "当前没有进行中的陪学会话",
+            fromUser = false
+        )
+        return record
+    }
+
+    fun updateStudySettings(settings: StudySettings) {
+        val previousSettings = StudySessionState.state.value.settings
+        StudySessionManager.updateSettings(settings)
+        if (previousSettings.cameraFacing != settings.cameraFacing &&
+            settings.observationEnabled &&
+            StudySessionState.state.value.mode != StudyMode.None
+        ) {
+            StudyObservationEngine.switchCamera(getApplication(), settings.cameraFacing)
+        }
+    }
+
+    fun clearStudyRecords() {
+        viewModelScope.launch { studySessionRepository.clearRecords() }
     }
 
     fun sendText(text: String): Boolean {
@@ -202,21 +400,27 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun analyzeCamera(prompt: String) {
-        runDirectVision(
+        runImageVision(
             prompt = prompt,
-            runningText = "正在拍照识别..."
-        ) {
-            val image = CameraCaptureController(getApplication()).capture()
-                ?: return@runDirectVision visionFailure("拍照不可用，请授予相机权限")
-            VisionService.analyze(
-                question = ScreenVisionPromptBuilder.buildCameraPrompt(
-                    prompt,
-                    structuredOutput = false
-                ),
-                image = image,
-                fileName = "camera.jpg"
-            )
-        }
+            runningText = "正在拍照识别...",
+            loadImage = {
+                val image = CameraCaptureController(getApplication()).capture()
+                    ?: return@runImageVision null
+                ChatImageStore.store(getApplication(), image)
+            }
+        )
+    }
+
+    fun analyzeImage(prompt: String, image: Uri) {
+        runImageVision(
+            prompt = prompt,
+            runningText = "正在识别图片...",
+            loadImage = {
+                val bytes = ChatImageStore.read(getApplication(), image)
+                    ?: return@runImageVision null
+                ChatImageStore.store(getApplication(), bytes)
+            }
+        )
     }
 
     fun runDiagnostics(includeServerProbe: Boolean) {
@@ -261,6 +465,12 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
                                         .put("text", message.text)
                                         .put("from_user", message.fromUser)
                                         .put("timestamp", message.timestamp)
+                                        .apply {
+                                            message.imagePath?.let { put("image_path", it) }
+                                            message.thumbnailPath?.let {
+                                                put("thumbnail_path", it)
+                                            }
+                                        }
                                 )
                             }
                         })
@@ -327,6 +537,27 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
         operationMessageFlow.value = null
     }
 
+    private fun runStudyCapture(capture: suspend () -> StudyCaptureResult) {
+        if (studyState.value.captureRunning) return
+        VoiceSessionState.appendChat("正在拍摄识别...", fromUser = false)
+        viewModelScope.launch {
+            try {
+                val ready = withContext(Dispatchers.IO) { ensureVisionServiceReady() }
+                val result = if (ready) {
+                    withContext(Dispatchers.IO) { capture() }
+                } else {
+                    StudyCaptureResult(false, "视觉分析服务暂未就绪，请先开启语音服务并完成连接")
+                }
+                VoiceSessionState.appendChat(result.message, fromUser = false)
+            } catch (error: Exception) {
+                VoiceSessionState.appendChat(
+                    error.message ?: "陪学识别失败，请稍后重试",
+                    fromUser = false
+                )
+            }
+        }
+    }
+
     private fun parseChatExport(raw: String): List<ChatMessage> {
         val trimmed = raw.trim()
         if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
@@ -352,7 +583,9 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
                         id = item.optLong("id", 0L),
                         text = text,
                         fromUser = item.optBoolean("from_user", false),
-                        timestamp = item.optLong("timestamp", 0L).takeIf { it > 0 } ?: now
+                        timestamp = item.optLong("timestamp", 0L).takeIf { it > 0 } ?: now,
+                        imagePath = item.optString("image_path").takeIf { it.isNotBlank() },
+                        thumbnailPath = item.optString("thumbnail_path").takeIf { it.isNotBlank() }
                     )
                 )
             }
@@ -402,6 +635,59 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
             } catch (error: Exception) {
                 VoiceSessionState.appendChat(
                     error.message ?: "视觉识别失败，请稍后重试",
+                    fromUser = false
+                )
+            } finally {
+                VoiceSessionState.updateConversation(currentText = "")
+                visionRunning.set(false)
+            }
+        }
+    }
+
+    private fun runImageVision(
+        prompt: String,
+        runningText: String,
+        loadImage: suspend () -> StoredChatImage?
+    ) {
+        val normalizedPrompt = prompt.trim().ifBlank { "描述这张图片的内容" }
+
+        if (!visionRunning.compareAndSet(false, true)) {
+            VoiceSessionState.appendChat("上一次视觉识别还在处理，请稍候", fromUser = false)
+            return
+        }
+
+        VoiceSessionState.updateConversation(currentText = runningText)
+        viewModelScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    val storedImage = loadImage()
+                        ?: return@withContext visionFailure("图片读取失败，请重新选择")
+                    VoiceSessionState.appendChat(
+                        normalizedPrompt,
+                        fromUser = true,
+                        imagePath = storedImage.fullPath,
+                        thumbnailPath = storedImage.thumbnailPath
+                    )
+                    if (!ensureVisionServiceReady()) {
+                        visionFailure("视觉分析服务暂未就绪，请先开启语音服务并完成连接")
+                    } else {
+                        VisionService.analyze(
+                            question = ScreenVisionPromptBuilder.buildCameraPrompt(
+                                normalizedPrompt,
+                                structuredOutput = false
+                            ),
+                            image = storedImage.uploadBytes,
+                            fileName = "chat-image.jpg"
+                        )
+                    }
+                }
+                VoiceSessionState.appendChat(
+                    directVisionText(result),
+                    fromUser = false
+                )
+            } catch (error: Exception) {
+                VoiceSessionState.appendChat(
+                    error.message ?: "图片识别失败，请稍后重试",
                     fromUser = false
                 )
             } finally {
@@ -537,6 +823,7 @@ class XiaozhiViewModel(application: Application) : AndroidViewModel(application)
 
     private companion object {
         const val EXPORT_VERSION = 1
+        const val WAKE_WORD_TEST_SECONDS = 15
         const val MAX_IMPORT_BYTES = 2 * 1024 * 1024
         const val SERVICE_STOP_WAIT_MS = 300L
         const val VISION_CONFIG_TIMEOUT_MS = 8_000L

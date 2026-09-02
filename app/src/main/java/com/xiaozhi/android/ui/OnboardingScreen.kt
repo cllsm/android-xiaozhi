@@ -1,13 +1,6 @@
 package com.xiaozhi.android.ui
 
 import android.Manifest
-import android.app.Activity
-import android.content.Context
-import android.content.Intent
-import android.net.Uri
-import android.media.projection.MediaProjectionManager
-import android.os.Build
-import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -41,8 +34,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.xiaozhi.android.media.ScreenCaptureController
-import com.xiaozhi.android.service.MediaProjectionForegroundService
 
 @Composable
 internal fun OnboardingScreen(
@@ -64,18 +55,6 @@ internal fun OnboardingScreen(
             if (step < ONBOARDING_STEP_COUNT - 1) step += 1
         } else {
             notice = "未完成授权，此功能可能会受限"
-        }
-    }
-
-    val projectionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-            ScreenCaptureController.savePermissionResult(result.resultCode, result.data)
-            MediaProjectionForegroundService.start(context)
-            if (step < ONBOARDING_STEP_COUNT - 1) step += 1
-        } else {
-            notice = "未完成屏幕授权，屏幕理解会稍后再次询问"
         }
     }
 
@@ -137,27 +116,7 @@ internal fun OnboardingScreen(
                                 permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             }
                         }
-                        2 -> {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                            } else {
-                                step = 3
-                            }
-                        }
-                        3 -> permissionLauncher.launch(Manifest.permission.CAMERA)
-                        4 -> context.startActivity(
-                            Intent(
-                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                Uri.parse("package:${context.packageName}")
-                            )
-                        )
-                        5 -> projectionLauncher.launch(
-                            (context.getSystemService(Context.MEDIA_PROJECTION_SERVICE)
-                                as MediaProjectionManager).createScreenCaptureIntent()
-                        )
-                        6 -> context.startActivity(
-                            Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-                        )
+                        2 -> onFinish()
                         else -> onFinish()
                     }
                 },
@@ -166,7 +125,7 @@ internal fun OnboardingScreen(
             ) { Text(onboardingAction(step)) }
         }
 
-        if (step in 2..6) {
+        if (step == 2) {
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedButton(
                 onClick = {
@@ -186,35 +145,22 @@ internal fun OnboardingScreen(
     }
 }
 
-private const val ONBOARDING_STEP_COUNT = 7
+private const val ONBOARDING_STEP_COUNT = 3
 
 private fun onboardingTitle(step: Int): String = when (step) {
     0 -> "欢迎使用小智"
     1 -> "开启麦克风"
-    2 -> "开启服务通知"
-    3 -> "开启相机"
-    4 -> "启用悬浮窗"
-    5 -> "屏幕识别授权"
-    else -> "后台运行建议"
+    else -> "可选能力稍后再开"
 }
 
 private fun onboardingBody(step: Int): String = when (step) {
     0 -> "语音与文字内容会发送到已配置的小智服务器，用于生成回复。令牌和设备标识仅保存在本机。"
     1 -> "麦克风只在语音对话、唤醒词监听或需要听写时采集音频。"
-    2 -> "通知用于展示语音服务状态，不包含聊天内容。"
-    3 -> "相机仅在你主动要求拍照或识别面前内容时使用，可以稍后再授权。"
-    4 -> "悬浮窗提供后台快捷球，可在其他应用中聆听、打断或停止语音服务。开启后请允许小智显示在其他应用上层。"
-    5 -> "屏幕理解需要你在首次使用时授权屏幕采集；系统提示会出现，这是正常流程。"
-    else -> "如果系统频繁清理后台，可在系统设置中把小智加入电池优化白名单。此项可选。"
+    else -> "通知、相机、屏幕识别、悬浮窗和电池白名单会在首次使用对应功能时按需申请。你可以先回到首页，直接开始说话或打字。"
 }
 
 private fun onboardingAction(step: Int): String = when (step) {
     0 -> "开始配置"
     1 -> "授权麦克风"
-    2 -> "授权通知"
-    3 -> "授权相机"
-    4 -> "前往授权"
-    5 -> "立即授权"
-    6 -> "前往设置"
-    else -> "完成"
+    else -> "进入小智"
 }

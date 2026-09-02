@@ -17,6 +17,12 @@ enum class ConnectionStatus {
     Error
 }
 
+enum class ThemeMode {
+    System,
+    Dark,
+    Light
+}
+
 data class DeviceIdentity(
     val deviceId: String,
     val clientId: String,
@@ -29,6 +35,10 @@ data class VoiceRuntimeState(
     val status: ConnectionStatus = ConnectionStatus.Disconnected,
     val statusText: String = "待启动",
     val deviceState: DeviceState = DeviceState.Idle,
+    val waitingForNetwork: Boolean = false,
+    val autoRecoveryEnabled: Boolean = true,
+    val recoveryAttempt: Int = 0,
+    val recoveryLimit: Int = 0,
     val wakeWordEnabled: Boolean = true,
     val activationCode: String = "",
     val deviceId: String = "",
@@ -44,13 +54,16 @@ data class ChatMessage(
     val id: Long,
     val text: String,
     val fromUser: Boolean,
-    val timestamp: Long
+    val timestamp: Long,
+    val imagePath: String? = null,
+    val thumbnailPath: String? = null
 )
 
 data class SettingsState(
     val otaUrl: String = "https://api.tenclass.net/xiaozhi/ota/",
     val websocketUrl: String = "",
     val websocketToken: String = "",
+    val mcpEndpointUrl: String = DEFAULT_MCP_ENDPOINT_URL,
     val wakeWordEnabled: Boolean = true,
     val wakeWordText: String = "你好小智",
     val wakeWordSensitivity: Float = 0.25f,
@@ -65,9 +78,11 @@ data class SettingsState(
     val musicNeteaseLosslessAppKey: String = BuildConfig.NETEASE_LOSSLESS_APP_KEY,
     val musicNeteaseApiUrl: String = "",
     val musicDefaultQuality: String = "320k",
-    val darkTheme: Boolean = true,
+    val themeMode: ThemeMode = ThemeMode.System,
+    val musicRememberSelection: Boolean = true,
     val overlayEnabled: Boolean = false,
     val studyCompanionEnabled: Boolean = false,
+    val musicIslandEnabled: Boolean = true,
     val chatHistoryLimit: Int = 200,
     val connectRetryEnabled: Boolean = true,
     val connectRetryCount: Int = 5,
@@ -80,6 +95,16 @@ data class SettingsValidationResult(
 ) {
     val valid: Boolean get() = errors.isEmpty()
 }
+
+data class WakeWordTestState(
+    val running: Boolean = false,
+    val remainingSeconds: Int = 0,
+    val hits: Int = 0,
+    val message: String = ""
+)
+
+private const val DEFAULT_MCP_ENDPOINT_URL =
+    "wss://api.xiaozhi.me/mcp/?token=eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjk2MjUwNywiYWdlbnRJZCI6MjI2MjQzMSwiZW5kcG9pbnRJZCI6ImFnZW50XzIyNjI0MzEiLCJwdXJwb3NlIjoibWNwLWVuZHBvaW50IiwiaWF0IjoxNzg4MjUwNzExLCJleHAiOjE4MTk4MDgzMTF9.e_r11mSvrcP7P6BvwayWIuNntJr-2qZIolQ8DgUdc7wqjEToNNdid3e7vQikDIyi-1H4fZP0jmNXlnMUrtZdeg"
 
 data class DiagnosticItem(
     val name: String,

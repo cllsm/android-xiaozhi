@@ -18,6 +18,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import okhttp3.OkHttpClient
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -34,11 +35,22 @@ data class MusicSelectionOption(
 data class MusicSelectionPrompt(
     val query: String,
     val options: List<MusicSelectionOption>,
-    val autoSelectAtMillis: Long
-)
+    val autoSelectAtMillis: Long,
+    val pageSize: Int = MUSIC_SELECTION_PAGE_SIZE
+) {
+    val pageCount: Int
+        get() = if (options.isEmpty()) {
+            1
+        } else {
+            (options.size + pageSize - 1) / pageSize
+        }
+}
+
+const val MUSIC_SELECTION_PAGE_SIZE = 5
 
 object NativeMusicController {
     private val client = OkHttpClient.Builder()
+        .callTimeout(8, TimeUnit.SECONDS)
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(8, TimeUnit.SECONDS)
         .build()
@@ -72,7 +84,7 @@ object NativeMusicController {
     private var paused = false
 
     @Volatile
-    private var pausedByTts = false
+    private var pausedForVoiceInteraction = false
 
     @Volatile
     private var autoAdvanceEnabled = false
@@ -106,6 +118,39 @@ object NativeMusicController {
                     sourceName = searchResult.source.displayName
                 )
             }
+        val rememberedPreference = if (
+            activeSettings.musicRememberSelection && !fromPlaybackQueue
+        ) {
+            MusicHistoryRepository.selectionPreference(songName)
+        } else {
+            null
+        }
+        val preferredByHistory = rememberedPreference?.let { preference ->
+            options.firstOrNull { candidate ->
+                candidate.song.displayName == preference.title &&
+                    candidate.sourceId == preference.sourceId
+            } ?: options.firstOrNull { candidate ->
+                candidate.sourceId == preference.sourceId
+            }
+        }
+
+        if (preferredByHistory != null) {
+            val selection = resolvePreferredSelection(activeSettings, preferredByHistory)
+                ?: selectPlayableSong(
+                    settings = activeSettings,
+                    query = songName,
+                    preferredCandidate = preferredByHistory
+                )
+            if (selection != null) {
+                return playSelection(
+                    selection,
+                    switchedFromSourceName = preferredByHistory.sourceName.takeIf {
+                        selection.sourceId != preferredByHistory.sourceId
+                    }
+                )
+            }
+        }
+
         if (options.size > 1 && !fromPlaybackQueue) {
             showSelectionPrompt(songName, options)
             MusicPlaybackState.update { it.copy(loading = false) }
@@ -116,8 +161,8 @@ object NativeMusicController {
         val selection = resolvePreferredSelection(activeSettings, preferred)
             ?: selectPlayableSong(
                 settings = activeSettings,
-                songName = preferred?.song?.displayName ?: songName,
-                skipSourceId = preferred?.sourceId
+                query = songName,
+                preferredCandidate = preferred
             )
             ?: return buildString {
                 MusicPlaybackState.update { it.copy(loading = false) }
@@ -129,11 +174,39 @@ object NativeMusicController {
                 }
             }
 
-        return playSelection(selection)
+        return playSelection(
+            selection,
+            switchedFromSourceName = if (
+                preferred != null &&
+                selection.sourceId != preferred.sourceId
+            ) {
+                preferred.sourceName
+            } else {
+                null
+            }
+        )
     }
 
     fun hasPendingSelection(): Boolean {
         return selectionPromptFlow.value != null
+    }
+
+    fun postponeSelectionAutoPlay() {
+        synchronized(selectionLock) {
+            val prompt = selectionPromptFlow.value ?: return
+            val nextPrompt = prompt.copy(
+                autoSelectAtMillis = System.currentTimeMillis() + AUTO_SELECTION_DELAY_MS
+            )
+            selectionPromptFlow.value = nextPrompt
+            autoSelectionJob?.cancel()
+            autoSelectionJob = playbackScope.launch {
+                delay(AUTO_SELECTION_DELAY_MS)
+                if (selectionPromptFlow.value == nextPrompt) {
+                    val result = selectPendingCandidate(1, rememberSelection = false)
+                    VoiceSessionState.appendChat(result, fromUser = false)
+                }
+            }
+        }
     }
 
     fun pendingSelectionIndex(text: String): Int? {
@@ -142,24 +215,55 @@ object NativeMusicController {
             ?.any { it.number == index }?.takeIf { it }?.let { index }
     }
 
-    fun selectPendingCandidate(index: Int): String {
+    fun selectPendingCandidate(index: Int, rememberSelection: Boolean = true): String {
         val activeSettings = settings ?: return "音乐服务尚未初始化"
         if (!activeSettings.musicEnabled) return "音乐工具未启用，请在设置中开启"
 
+        val promptQuery = selectionPromptFlow.value?.query
         val candidate = takePendingCandidate(index) ?: return "请输入有效的序号"
+        Log.i(
+            "NativeMusic",
+            "选择歌曲:id=${candidate.song.songId},title=${candidate.song.title}," +
+                "artist=${candidate.song.artist},source=${candidate.sourceId}"
+        )
+        val query = promptQuery ?: candidate.song.title
         MusicPlaybackState.update { it.copy(loading = true) }
 
         val selection = resolvePreferredSelection(activeSettings, candidate)
             ?: selectPlayableSong(
                 settings = activeSettings,
-                songName = candidate.song.displayName,
-                skipSourceId = candidate.sourceId
+                query = query,
+                preferredCandidate = candidate
             )
             ?: return "所选歌曲暂无法播放：${candidate.song.displayName}".also {
                 MusicPlaybackState.update { current -> current.copy(loading = false) }
             }
+        if (selection.sourceId != candidate.sourceId) {
+            Log.w(
+                "NativeMusic",
+                "同曲跨源匹配:query=$query,title=${selection.song.title}," +
+                    "artist=${selection.song.artist},from=${candidate.sourceId}," +
+                    "to=${selection.sourceId},songId=${selection.song.songId}"
+            )
+        }
 
-        return playSelection(selection)
+        val switchedFromSourceName = candidate.sourceName.takeIf {
+            selection.sourceId != candidate.sourceId
+        }
+        val playbackResult = playSelection(selection, switchedFromSourceName)
+        if (
+            rememberSelection &&
+            activeSettings.musicRememberSelection &&
+            playbackResult.startsWith("正在")
+        ) {
+            MusicHistoryRepository.rememberSelection(
+                query = query,
+                title = selection.song.displayName,
+                sourceId = selection.sourceId,
+                sourceName = selection.sourceName
+            )
+        }
+        return playbackResult
     }
 
     fun clearPendingSelection() {
@@ -192,13 +296,14 @@ object NativeMusicController {
                     if (player?.isPlaying == true) {
                         player.pause()
                         paused = true
-                        pausedByTts = source == "tts"
+                        pausedForVoiceInteraction = source != "manual"
                         MusicPlaybackState.update { it.copy(paused = true) }
                         "已暂停"
                     } else {
                         "没有正在播放的歌曲"
                     }
                 } else {
+                    if (source == "manual") pausedForVoiceInteraction = false
                     "已经处于暂停状态"
                 }
             } catch (_: Exception) {
@@ -222,7 +327,7 @@ object NativeMusicController {
                 } else {
                     playerField?.start()
                     paused = false
-                    pausedByTts = false
+                    pausedForVoiceInteraction = false
                     MusicPlaybackState.update { it.copy(paused = false) }
                     "已恢复播放"
                 }
@@ -289,7 +394,17 @@ object NativeMusicController {
         return position
     }
 
-    fun isPausedByTts(): Boolean = pausedByTts
+    fun isPausedForVoiceInteraction(): Boolean = pausedForVoiceInteraction
+    fun pauseForVoiceInteraction() {
+        if (!hasTrack || paused) return
+        if (pause(source = "voice") == "已暂停") {
+            pausedForVoiceInteraction = true
+        }
+    }
+
+    fun resumeAfterVoiceInteraction() {
+        if (pausedForVoiceInteraction) resume()
+    }
 
     fun getLyrics(): String {
         val activeSettings = settings ?: return "音乐服务尚未初始化"
@@ -355,8 +470,16 @@ object NativeMusicController {
             ?: return null
         return try {
             val playback = source.resolvePlayback(candidate.song) ?: return null
+            Log.i(
+                "NativeMusic",
+                "播放地址解析成功:source=${source.id},songId=${candidate.song.songId}"
+            )
             if (!MusicPlaybackProbe.isPlayableUrl(client, playback.url)) {
-                Log.w("NativeMusic", "${source.displayName}直链不可播放")
+                Log.w(
+                    "NativeMusic",
+                    "${source.displayName}直链不可播放:host=" +
+                        playback.url.toHttpUrlOrNull()?.host.orEmpty()
+                )
                 null
             } else {
                 MusicSelection(source.id, source.displayName, candidate.song, playback)
@@ -393,7 +516,7 @@ object NativeMusicController {
         val timeoutJob = playbackScope.launch {
             delay(AUTO_SELECTION_DELAY_MS)
             if (selectionPromptFlow.value == prompt) {
-                val result = selectPendingCandidate(1)
+                val result = selectPendingCandidate(1, rememberSelection = false)
                 VoiceSessionState.appendChat(result, fromUser = false)
             }
         }
@@ -417,19 +540,26 @@ object NativeMusicController {
     }
 
     private fun formatSelectionPrompt(prompt: MusicSelectionPrompt): String {
+        val visibleOptions = prompt.options.take(prompt.pageSize)
         return buildString {
             appendLine("找到 ${prompt.options.size} 个版本，5 秒内回复序号选择：")
-            prompt.options.forEach { option ->
+            visibleOptions.forEach { option ->
                 appendLine(
                     "${option.number}. ${option.title}" +
                         option.artist.takeIf { it.isNotBlank() }?.let { " - $it" }.orEmpty() +
                         "（${option.sourceName}）"
                 )
             }
+            if (prompt.options.size > visibleOptions.size) {
+                appendLine("其余版本可在选择弹窗中翻页查看。")
+            }
         }.trimEnd()
     }
 
-    private fun playSelection(selection: MusicSelection): String {
+    private fun playSelection(
+        selection: MusicSelection,
+        switchedFromSourceName: String? = null
+    ): String {
         currentSong = selection.song.displayName
         currentSongId = selection.song.songId
         currentSourceId = selection.sourceId
@@ -438,29 +568,47 @@ object NativeMusicController {
         }
         autoAdvanceEnabled = true
         val hasAdjacentTracks = MusicHistoryRepository.queueHasMultipleTracks()
+        val sourceName = selection.sourceName
         MusicPlaybackState.update {
             MusicRuntimeState(
                 loading = true,
                 title = selection.song.displayName,
-                sourceName = selection.sourceName,
+                sourceName = sourceName,
                 hasPrevious = hasAdjacentTracks,
                 hasNext = hasAdjacentTracks
             )
         }
-        return startPlayback(selection.playback.url, selection.playback.isPreview)
+        return startPlayback(
+            url = selection.playback.url,
+            isPreview = selection.playback.isPreview,
+            hasAdjacentTracks = hasAdjacentTracks,
+            sourceName = sourceName,
+            switchedFromSourceName = switchedFromSourceName
+        )
     }
 
     private fun selectPlayableSong(
         settings: SettingsState,
-        songName: String,
-        skipSourceId: String? = null
+        query: String,
+        preferredCandidate: PendingMusicCandidate?
     ): MusicSelection? {
         val errors = mutableListOf<String>()
         var previewSelection: MusicSelection? = null
         for (source in createSources(settings)) {
-            if (source.id == skipSourceId) continue
+            if (preferredCandidate != null && source.id == preferredCandidate.sourceId) continue
             try {
-                val songs = source.searchSongs(songName)
+                val songs = if (preferredCandidate == null) {
+                    source.searchSongs(query)
+                } else {
+                    MusicSelectionPolicy.prioritizeFallbackSongs(
+                        songs = source.searchSongs(query),
+                        preferred = preferredCandidate.song
+                    )
+                }
+                if (songs.isEmpty()) {
+                    errors.add("${source.displayName}未返回匹配歌曲")
+                    continue
+                }
                 var playbackLookups = 0
                 for (song in songs.take(MAX_CANDIDATES)) {
                     if (playbackLookups >= source.playbackLookupLimit) break
@@ -507,7 +655,13 @@ object NativeMusicController {
         }
     }
 
-    private fun startPlayback(url: String, isPreview: Boolean): String {
+    private fun startPlayback(
+        url: String,
+        isPreview: Boolean,
+        hasAdjacentTracks: Boolean,
+        sourceName: String,
+        switchedFromSourceName: String? = null
+    ): String {
         val prepared = CountDownLatch(1)
         var message = ""
         mainHandler.post {
@@ -520,22 +674,31 @@ object NativeMusicController {
                 it.start()
                 hasTrack = true
                 paused = false
-                pausedByTts = false
+                pausedForVoiceInteraction = false
                 MusicPlaybackState.update {
                     MusicRuntimeState(
                         hasTrack = true,
                         paused = false,
                         title = currentSong,
-                        sourceName = currentSourceName(),
-                        hasPrevious = MusicHistoryRepository.queueHasMultipleTracks(),
-                        hasNext = MusicHistoryRepository.queueHasMultipleTracks()
+                        sourceName = sourceName,
+                        hasPrevious = hasAdjacentTracks,
+                        hasNext = hasAdjacentTracks
                     )
                 }
                 MusicHistoryRepository.recordPlayback(
                     title = currentSong,
-                    sourceName = currentSourceName()
+                    sourceName = sourceName
                 )
-                message = if (isPreview) "正在试听：$currentSong" else "正在播放：$currentSong"
+                val sourceMessage = if (switchedFromSourceName == null) {
+                    "$currentSong（$sourceName）"
+                } else {
+                    "$currentSong（$sourceName，原${switchedFromSourceName}不可播已切换）"
+                }
+                message = if (isPreview) {
+                    "正在试听：$sourceMessage"
+                } else {
+                    "正在播放：$sourceMessage"
+                }
                 prepared.countDown()
             }
             player.setOnCompletionListener {
@@ -583,14 +746,14 @@ object NativeMusicController {
         playerField = null
         hasTrack = false
         paused = false
-        pausedByTts = false
+        pausedForVoiceInteraction = false
         MusicPlaybackState.clear()
     }
 
     private const val ACTION_TIMEOUT_SECONDS = 3L
     private const val PREPARE_TIMEOUT_SECONDS = 20L
     private const val MAX_CANDIDATES = 5
-    private const val MAX_SELECTION_OPTIONS = 5
+    private const val MAX_SELECTION_OPTIONS = 20
     private const val AUTO_SELECTION_DELAY_MS = 5_000L
 
     private fun currentSourceName(): String {

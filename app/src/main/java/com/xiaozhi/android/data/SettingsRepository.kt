@@ -8,6 +8,8 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.xiaozhi.android.core.SettingsState
+import com.xiaozhi.android.core.ThemeMode
+import com.xiaozhi.android.core.McpEndpointUrlMigration
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
@@ -21,6 +23,7 @@ class SettingsRepository(private val context: Context) {
         val OtaUrl = stringPreferencesKey("ota_url")
         val WebsocketUrl = stringPreferencesKey("websocket_url")
         val WebsocketToken = stringPreferencesKey("websocket_token")
+        val McpEndpointUrl = stringPreferencesKey("mcp_endpoint_url")
         val WakeWordEnabled = booleanPreferencesKey("wake_word_enabled")
         val WakeWordText = stringPreferencesKey("wake_word_text")
         val WakeWordSensitivity = floatPreferencesKey("wake_word_sensitivity")
@@ -35,9 +38,12 @@ class SettingsRepository(private val context: Context) {
         val MusicNeteaseLosslessAppKey = stringPreferencesKey("music_netease_lossless_app_key")
         val MusicNeteaseApiUrl = stringPreferencesKey("music_netease_api_url")
         val MusicDefaultQuality = stringPreferencesKey("music_default_quality")
-        val DarkTheme = booleanPreferencesKey("dark_theme")
+        val LegacyDarkTheme = booleanPreferencesKey("dark_theme")
+        val ThemeModeKey = stringPreferencesKey("theme_mode")
+        val MusicRememberSelection = booleanPreferencesKey("music_remember_selection")
         val OverlayEnabled = booleanPreferencesKey("overlay_enabled")
         val StudyCompanionEnabled = booleanPreferencesKey("study_companion_enabled")
+        val MusicIslandEnabled = booleanPreferencesKey("music_island_enabled")
         val ChatHistoryLimit = intPreferencesKey("chat_history_limit")
         val ConnectRetryEnabled = booleanPreferencesKey("connect_retry_enabled")
         val ConnectRetryCount = intPreferencesKey("connect_retry_count")
@@ -54,6 +60,10 @@ class SettingsRepository(private val context: Context) {
                 otaUrl = prefs[Keys.OtaUrl] ?: SettingsState().otaUrl,
                 websocketUrl = prefs[Keys.WebsocketUrl] ?: "",
                 websocketToken = prefs[Keys.WebsocketToken] ?: "",
+                mcpEndpointUrl = McpEndpointUrlMigration.resolve(
+                    savedUrl = prefs[Keys.McpEndpointUrl],
+                    defaultUrl = SettingsState().mcpEndpointUrl
+                ),
                 wakeWordEnabled = prefs[Keys.WakeWordEnabled] ?: true,
                 wakeWordText = prefs[Keys.WakeWordText] ?: "你好小智",
                 wakeWordSensitivity = prefs[Keys.WakeWordSensitivity] ?: 0.25f,
@@ -74,9 +84,15 @@ class SettingsRepository(private val context: Context) {
                 },
                 musicNeteaseApiUrl = prefs[Keys.MusicNeteaseApiUrl] ?: "",
                 musicDefaultQuality = prefs[Keys.MusicDefaultQuality] ?: "320k",
-                darkTheme = prefs[Keys.DarkTheme] ?: true,
+                themeMode = prefs[Keys.ThemeModeKey]?.toThemeMode()
+                    ?: prefs[Keys.LegacyDarkTheme]?.let { dark ->
+                        if (dark) ThemeMode.Dark else ThemeMode.Light
+                    }
+                    ?: ThemeMode.System,
+                musicRememberSelection = prefs[Keys.MusicRememberSelection] ?: true,
                 overlayEnabled = prefs[Keys.OverlayEnabled] ?: false,
                 studyCompanionEnabled = prefs[Keys.StudyCompanionEnabled] ?: false,
+                musicIslandEnabled = prefs[Keys.MusicIslandEnabled] ?: true,
                 chatHistoryLimit = prefs[Keys.ChatHistoryLimit] ?: 200,
                 connectRetryEnabled = prefs[Keys.ConnectRetryEnabled] ?: true,
                 connectRetryCount = prefs[Keys.ConnectRetryCount] ?: 5,
@@ -89,6 +105,7 @@ class SettingsRepository(private val context: Context) {
             prefs[Keys.OtaUrl] = newState.otaUrl
             prefs[Keys.WebsocketUrl] = newState.websocketUrl
             prefs[Keys.WebsocketToken] = newState.websocketToken
+            prefs[Keys.McpEndpointUrl] = newState.mcpEndpointUrl
             prefs[Keys.WakeWordEnabled] = newState.wakeWordEnabled
             prefs[Keys.WakeWordText] = newState.wakeWordText
             prefs[Keys.WakeWordSensitivity] = newState.wakeWordSensitivity
@@ -103,9 +120,11 @@ class SettingsRepository(private val context: Context) {
             prefs[Keys.MusicNeteaseLosslessAppKey] = newState.musicNeteaseLosslessAppKey
             prefs[Keys.MusicNeteaseApiUrl] = newState.musicNeteaseApiUrl
             prefs[Keys.MusicDefaultQuality] = newState.musicDefaultQuality
-            prefs[Keys.DarkTheme] = newState.darkTheme
+            prefs[Keys.ThemeModeKey] = newState.themeMode.name
+            prefs[Keys.MusicRememberSelection] = newState.musicRememberSelection
             prefs[Keys.OverlayEnabled] = newState.overlayEnabled
             prefs[Keys.StudyCompanionEnabled] = newState.studyCompanionEnabled
+            prefs[Keys.MusicIslandEnabled] = newState.musicIslandEnabled
             prefs[Keys.ChatHistoryLimit] = newState.chatHistoryLimit
             prefs[Keys.ConnectRetryEnabled] = newState.connectRetryEnabled
             prefs[Keys.ConnectRetryCount] = newState.connectRetryCount
@@ -116,3 +135,10 @@ class SettingsRepository(private val context: Context) {
 
 private fun emptyPreferences(): androidx.datastore.preferences.core.Preferences =
     androidx.datastore.preferences.core.emptyPreferences()
+
+private fun String.toThemeMode(): ThemeMode? = when (lowercase()) {
+    "system" -> ThemeMode.System
+    "dark" -> ThemeMode.Dark
+    "light" -> ThemeMode.Light
+    else -> null
+}

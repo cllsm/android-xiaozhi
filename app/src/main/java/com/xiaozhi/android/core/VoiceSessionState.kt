@@ -52,6 +52,22 @@ object VoiceSessionState {
         )
     }
 
+    fun updateRecovery(
+        waitingForNetwork: Boolean? = null,
+        autoRecoveryEnabled: Boolean? = null,
+        recoveryAttempt: Int? = null,
+        recoveryLimit: Int? = null
+    ) {
+        val current = stateFlow.value
+        val newState = current.copy(
+            waitingForNetwork = waitingForNetwork ?: current.waitingForNetwork,
+            autoRecoveryEnabled = autoRecoveryEnabled ?: current.autoRecoveryEnabled,
+            recoveryAttempt = (recoveryAttempt ?: current.recoveryAttempt).coerceAtLeast(0),
+            recoveryLimit = (recoveryLimit ?: current.recoveryLimit).coerceAtLeast(0)
+        )
+        if (newState != current) stateFlow.value = newState
+    }
+
     fun updateConversation(
         currentText: String? = null,
         emotion: String? = null
@@ -62,11 +78,21 @@ object VoiceSessionState {
         )
     }
 
-    fun appendChat(text: String, fromUser: Boolean) {
+    fun appendChat(
+        text: String,
+        fromUser: Boolean,
+        imagePath: String? = null,
+        thumbnailPath: String? = null
+    ) {
         if (text.isBlank()) return
         val current = stateFlow.value
         val lastMessage = current.chat.lastOrNull()
-        if (fromUser && lastMessage?.fromUser == true && lastMessage.text == text) return
+        if (
+            fromUser &&
+            lastMessage?.fromUser == true &&
+            lastMessage.text == text &&
+            lastMessage.imagePath == imagePath
+        ) return
         stateFlow.value = current.copy(
             chat = (
                 current.chat +
@@ -74,7 +100,9 @@ object VoiceSessionState {
                         id = (current.chat.lastOrNull()?.id ?: 0L) + 1L,
                         text = text,
                         fromUser = fromUser,
-                        timestamp = System.currentTimeMillis()
+                        timestamp = System.currentTimeMillis(),
+                        imagePath = imagePath,
+                        thumbnailPath = thumbnailPath
                     )
                 ).takeLast(chatHistoryLimit)
         )

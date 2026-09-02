@@ -52,9 +52,9 @@ object NeteaseLosslessMusicSelector {
                     is JSONObject -> value.optString("name")
                     else -> value?.toString().orEmpty()
                 }
-            }.filter { it.isNotBlank() }.joinToString("/")
+                }.filter { it.isNotBlank() }.joinToString("/")
         }
-        return readString(item, "artist", "artists") ?: ""
+        return readString(item, "artist", "artists", "singer") ?: ""
     }
 
     private fun readAlbum(item: JSONObject): String {
@@ -83,8 +83,8 @@ object NeteaseLosslessMusicSelector {
 
     private fun findString(root: JSONObject, names: Set<String>): String? {
         for (name in names) {
-            val value = root.optString(name)
-            if (value.isNotBlank()) return value
+            val value = root.opt(name)
+            if (value is String && value.isNotBlank() && value != "null") return value
         }
         for (key in root.keys()) {
             val value = root.opt(key) ?: continue

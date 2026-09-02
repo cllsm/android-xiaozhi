@@ -5,6 +5,7 @@ import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import android.util.Log
 import org.json.JSONObject
 import kotlinx.coroutines.delay
 import java.util.concurrent.TimeUnit
@@ -26,6 +27,7 @@ object VisionService {
         val vision = capabilities.optJSONObject("vision") ?: return
         analyzeUrl = vision.optString("url").orEmpty()
         token = vision.optString("token").orEmpty()
+        Log.i(TAG, "configured, url=$analyzeUrl, token=${token.isNotBlank()}")
     }
 
     fun isConfigured(): Boolean {
@@ -45,6 +47,11 @@ object VisionService {
         if (analyzeUrl.isBlank()) {
             return failure("视觉分析服务 URL 未配置")
         }
+        Log.i(
+            TAG,
+            "analyze request, file=$fileName, imageSize=${image.size}, " +
+                "questionLength=${question.length}, url=$analyzeUrl"
+        )
 
         val body = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
@@ -65,11 +72,19 @@ object VisionService {
             client.newCall(request).execute().use { response ->
                 val text = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
+                    Log.w(
+                        TAG,
+                        "analyze failed, http=${response.code}, " +
+                            "contentType=${response.header("Content-Type").orEmpty()}, " +
+                            "body=${text.take(LOG_BODY_LIMIT)}"
+                    )
                     return failure("上传图片失败，HTTP ${response.code}")
                 }
+                Log.i(TAG, "analyze response, http=${response.code}, bodyLength=${text.length}")
                 parseResponse(text)
             }
         } catch (error: Exception) {
+            Log.w(TAG, "analyze request failed: ${error.message ?: error.javaClass.simpleName}", error)
             failure("连接视觉分析服务失败：${error.message ?: error.javaClass.simpleName}")
         }
     }
@@ -85,4 +100,7 @@ object VisionService {
     private fun failure(message: String): JSONObject {
         return JSONObject().put("success", false).put("message", message)
     }
+
+    private const val TAG = "StudyVision"
+    private const val LOG_BODY_LIMIT = 1_000
 }
