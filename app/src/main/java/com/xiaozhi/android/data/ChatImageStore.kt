@@ -11,6 +11,7 @@ import com.xiaozhi.android.core.ImageCodecs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.ByteArrayOutputStream
 import java.util.UUID
 import kotlin.math.roundToInt
 
@@ -34,8 +35,16 @@ object ChatImageStore {
         context: Context,
         sourceBytes: ByteArray
     ): StoredChatImage? = withContext(Dispatchers.IO) {
-        if (!ImageCodecs.looksLikeJpeg(sourceBytes)) {
-            Log.w(TAG, "Chat image rejected, bytes=${sourceBytes.size}")
+        val uploadSourceBytes = if (ImageCodecs.looksLikeJpeg(sourceBytes)) {
+            sourceBytes
+        } else {
+            transcodeToJpeg(sourceBytes)
+        }
+        if (uploadSourceBytes == null) {
+            Log.w(
+                TAG,
+                "Chat image decode/transcode failed, bytes=${sourceBytes.size}"
+            )
             return@withContext null
         }
 
@@ -47,15 +56,18 @@ object ChatImageStore {
 
         val id = UUID.randomUUID().toString()
         val sourceFile = File(directory, "${id}_source.jpg")
-        if (!writeBytes(sourceFile, sourceBytes)) {
-            Log.w(TAG, "Chat source image write failed, bytes=${sourceBytes.size}")
+        if (!writeBytes(sourceFile, uploadSourceBytes)) {
+            Log.w(
+                TAG,
+                "Chat source image write failed, bytes=${uploadSourceBytes.size}"
+            )
             return@withContext null
         }
 
         var fullFile = sourceFile
-        var uploadBytes = sourceBytes
+        var uploadBytes = uploadSourceBytes
         var thumbnailFile = sourceFile
-        val bitmap = runCatching { decodeOrientedBitmap(sourceBytes) }.getOrNull()
+        val bitmap = runCatching { decodeOrientedBitmap(uploadSourceBytes) }.getOrNull()
         if (bitmap == null) {
             Log.w(
                 TAG,
@@ -125,6 +137,22 @@ object ChatImageStore {
                 bitmap.compress(Bitmap.CompressFormat.JPEG, quality, output)
             }
         }.getOrDefault(false)
+    }
+
+    private fun transcodeToJpeg(sourceBytes: ByteArray): ByteArray? {
+        val bitmap = runCatching { decodeOrientedBitmap(sourceBytes) }.getOrNull()
+            ?: return null
+        try {
+            val output = ByteArrayOutputStream()
+            if (!bitmap.compress(Bitmap.CompressFormat.JPEG, FULL_QUALITY, output)) {
+                return null
+            }
+            return output.toByteArray().takeIf {
+                it.size >= 4 && ImageCodecs.looksLikeJpeg(it)
+            }
+        } finally {
+            recycleBitmap(bitmap)
+        }
     }
 
     private fun recycleBitmap(bitmap: Bitmap) {
